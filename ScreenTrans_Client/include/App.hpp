@@ -78,12 +78,6 @@ namespace audio {
 	inline constexpr int bufSec = 1;
 }
 
-#if USE_IMGUI
-namespace ImGui {
-	void DockingSpace();
-}
-#endif
-
 class App {
 private:
 	//inline std::chrono::steady_clock::time_point now() { return std::chrono::steady_clock::now(); }
@@ -135,7 +129,7 @@ public:
 		uint32_t room_id{ Room::invalid_id };
 		uint32_t passwd{ Room::invalid_passwd };
 	} logger;
-	Page page;
+	Page page{ Page::connectToServer };
 	
 	std::mutex mtx_video_frames;
 	std::mutex mtx_close;
