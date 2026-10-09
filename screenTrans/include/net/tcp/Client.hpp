@@ -46,7 +46,8 @@ namespace net {
     template <typename T>
     concept CIsVector = is_vector_v<T>;
 
-	using msg_size = int;
+    static_assert(std::same_as<int32_t, int>);
+	using msg_size = int32_t;
 
     namespace tcp {
 
@@ -71,13 +72,12 @@ namespace net {
             socket_t Id() { return skt.id(); }
 
             void Close() { skt.Close(); }
-            bool Closed() { return skt.Closed(); }
+            [[nodiscard]] bool Closed() { return skt.Closed(); }
 
-            static msg_size send_all(socket_t s, const void* buf, msg_size len);
-            static msg_size recv_all(socket_t s, void* buf, msg_size len);
+            std::optional<msg_size> recv_one(void* buf, msg_size len);
 
-            msg_size send_all(const void* buf, msg_size len) { return send_all(skt.id(), buf, len); }
-            msg_size recv_all(void* buf, msg_size len) { return recv_all(skt.id(), buf, len); }
+            std::optional<msg_size> send_all(const void* buf, msg_size len);
+            std::optional<msg_size> recv_all(void* buf, msg_size len);
 
             // when using this, there is no ntoh or hton
             // bases of all Send
@@ -86,8 +86,8 @@ namespace net {
             bool Send(const std::vector<int8_t>& data);
 
             //auto hton, so data inside will be changed, so copy or move
-            template<typename vec>
-                requires is_vector_v<vec>&& CNumberType<typename vec::value_type>
+            template<CIsVector vec>
+                requires CNumberType<typename vec::value_type>
             bool Send(vec data);
 
             template<CNumberType T>

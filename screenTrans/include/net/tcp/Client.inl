@@ -134,7 +134,31 @@ namespace tcp {
 		return true;
 	}
 
-	inline msg_size Client::send_all(socket_t s, const void* buf, msg_size len)
+	inline std::optional<msg_size> Client::recv_one(void* buf, msg_size len) {
+#		ifdef _WIN32
+			using recv_ret_t = int;
+			using recv_len_t = int;
+#		else
+			using recv_ret_t = ssize_t;
+			using recv_len_t = size_t;
+#		endif		
+		recv_ret_t ret = recv(skt.id(), static_cast<char*>(buf), static_cast<recv_len_t>(len), 0);
+		if (ret < 0) [[unlikely]] {
+			int code = last_socket_error();
+			NET_SOCKET_SET_ERROR("recv() failed with error code: " + std::to_string(code));
+			if (Socket::CheckClosedByErrorCode(code)) {
+				skt.Close(); // server closed
+			}
+			return {};
+		}
+		else if (ret == 0) [[unlikely]] {
+			skt.Close(); // server closed
+			return {};
+		}
+		return ret;
+	}
+
+	inline std::optional<msg_size> Client::send_all(const void* buf, msg_size len)
 	{
 #		ifdef _WIN32
 			using send_ret_t = int;       // send 返回值
@@ -144,64 +168,54 @@ namespace tcp {
 			using send_len_t = size_t;
 #		endif
 		assert(len >= 0);
-		msg_size total = 0;
-		while (total < len) {
+		msg_size ret = 0;
+		while (ret < len) {
 #			ifdef __linux__
 				constexpr int send_flags = MSG_NOSIGNAL;
 #			else
 				constexpr int send_flags = 0;
 #			endif
-			send_ret_t sent = send(s, static_cast<const char*>(buf) + total, static_cast<send_len_t>(len - total), send_flags);
+			send_ret_t sent = send(skt.id(), static_cast<const char*>(buf) + ret, static_cast<send_len_t>(len - ret), send_flags);
 			if (sent <= 0) {
-				if (sent == 0) { return 0; }
+				if (sent == 0) { ret = 0; break; }
 				int code = last_socket_error();
 #				ifdef _WIN32
 					if (code == WSAEINTR) continue;
 #				else
 					if (code == EINTR) continue;
 #				endif
-				return static_cast<msg_size>(sent);
-			}			
-			total += static_cast<msg_size>(sent);
+				ret = static_cast<msg_size>(sent);
+				break;
+			}
+			ret += static_cast<msg_size>(sent);
 		}
-		return total;
+		if (ret < 0) {
+			int code = last_socket_error();
+			NET_SOCKET_SET_ERROR("send() failed with error code: " + std::to_string(code));
+			if (Socket::CheckClosedByErrorCode(code)) {
+				skt.Close(); // server closed
+			}
+			return {};
+		}
+		else if (ret == 0 && len > 0) {
+			skt.Close(); // server closed
+			return {};
+		}
+		return ret;
 	}
 
 	inline bool Client::Send(const void* data, size_t bytes) {
 		static_assert(sizeof(size_t) >= sizeof(msg_size));
-		int ret;
 		//send length
 		assert(std::in_range<msg_size>(bytes));
 		msg_size len = static_cast<msg_size>(bytes);
 		msg_size net_len = host_to_network(len);
 
-		ret = send_all(&net_len, static_cast<msg_size>(sizeof(msg_size)));
-		if (ret < 0) {
-			int code = last_socket_error();
-			NET_SOCKET_SET_ERROR("send() failed with error code: " + std::to_string(code));
-			if (Socket::CheckClosedByErrorCode(code)) {
-				skt.Close(); // server closed
-			}
-			return false;
-		}
-		else if (ret == 0) {
-			skt.Close(); // server closed
-			return false;
-		}
+		auto ret = send_all(&net_len, static_cast<msg_size>(sizeof(msg_size)));
+		if (!ret) [[unlikely]] { return false; }
 		//send msg
 		ret = send_all(data, len);
-		if (ret < 0) {
-			int code = last_socket_error();
-			NET_SOCKET_SET_ERROR("send() failed with error code: " + std::to_string(code));
-			if (Socket::CheckClosedByErrorCode(code)) {
-				skt.Close(); // server closed
-			}
-			return false;
-		}
-		else if (ret == 0 && len > 0) {
-			skt.Close(); // server closed
-			return false;
-		}
+		if (!ret) [[unlikely]] { return false; }
 		return true;
 	}
 
@@ -223,37 +237,15 @@ namespace tcp {
 
 	inline std::optional<msg_size> Client::recv_bytes() {
 		msg_size net_len;
-		msg_size ret = recv_all(&net_len, static_cast<msg_size>(sizeof(msg_size)));
-		if (ret < 0) {
-			int code = last_socket_error();
-			NET_SOCKET_SET_ERROR("recv() failed with error code: " + std::to_string(code));
-			if (Socket::CheckClosedByErrorCode(code)) {
-				skt.Close(); // server closed
-			}
-			return {};
-		}
-		else if (ret == 0) {
-			skt.Close(); // server closed
-			return {};
-		}
+		auto ret = recv_all(&net_len, static_cast<msg_size>(sizeof(msg_size)));
+		if (!ret || *ret != sizeof(msg_size)) [[unlikely]] { return {}; }
 		msg_size msg_len = network_to_host(net_len);
 		return msg_len;
 	}
 
 	inline bool Client::recv_msg(void* data, msg_size bytes) {
-		msg_size ret = recv_all(data, bytes);
-		if (ret < 0) {
-			int code = last_socket_error();
-			NET_SOCKET_SET_ERROR("recv() failed with error code: " + std::to_string(code));
-			if (Socket::CheckClosedByErrorCode(code)) {
-				skt.Close(); // server closed
-			}
-			return false;
-		}
-		else if (ret == 0 && bytes > 0) {
-			skt.Close(); // server closed
-			return false;
-		}
+		auto ret = recv_all(data, bytes);
+		if (!ret) { return {}; }
 		return true;
 	}
 
@@ -306,7 +298,7 @@ namespace tcp {
 		return res;
 	}
 
-	inline msg_size Client::recv_all(socket_t s, void* buf, msg_size len) {
+	inline std::optional<msg_size> Client::recv_all(void* buf, msg_size len) {
 #		ifdef _WIN32
 			using recv_ret_t = int;
 			using recv_len_t = int;
@@ -314,18 +306,30 @@ namespace tcp {
 			using recv_ret_t = ssize_t;
 			using recv_len_t = size_t;
 #		endif		
-		msg_size total = 0;
-		while (total < len) {
-			recv_ret_t bytes = recv(s, static_cast<char*>(buf) + total, static_cast<recv_len_t>(len - total), 0);
-			if (bytes <= 0) { return static_cast<msg_size>(bytes); }
-			total += static_cast<msg_size>(bytes);
+		msg_size ret = 0;
+		while (ret < len) {
+			recv_ret_t bytes = recv(skt.id(), static_cast<char*>(buf) + ret, static_cast<recv_len_t>(len - ret), 0);
+			if (bytes <= 0) [[unlikely]] { ret = static_cast<msg_size>(bytes); break; }
+			ret += static_cast<msg_size>(bytes);
 		}
-		return total;
+		if (ret < 0) [[unlikely]] {
+			int code = last_socket_error();
+			NET_SOCKET_SET_ERROR("recv() failed with error code: " + std::to_string(code));
+			if (Socket::CheckClosedByErrorCode(code)) {
+				skt.Close(); // server closed
+			}
+			return {};
+		}
+		else if (ret == 0 && len > 0) [[unlikely]] {
+			skt.Close(); // server closed
+			return {};
+		}
+		return ret;
 	}
 
 	//auto hton, so data inside will be changed, so copy or move
-	template<typename vec>
-		requires is_vector_v<vec>&& CNumberType<typename vec::value_type>
+	template<CIsVector vec>
+		requires CNumberType<typename vec::value_type>
 	inline bool Client::Send(vec data) {
 		using elem_t = typename vec::value_type;
 		static_assert(!std::same_as<elem_t, bool>);

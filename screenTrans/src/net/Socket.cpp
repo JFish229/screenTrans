@@ -114,11 +114,12 @@ namespace net {
 	void Socket::Close()
 	{
 		if(m_id != invalid_socket){
-#ifdef _WIN32
-			::closesocket(m_id);
-#else
-			::close(m_id);
-#endif		
+#			ifdef _WIN32
+				::closesocket(m_id);
+#			else
+				::shutdown(m_id, SHUT_RDWR);  // Linux: 先用 shutdown 唤醒 accep
+				::close(m_id);
+#			endif		
 		}
 		m_id = invalid_socket;
 	}

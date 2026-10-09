@@ -44,9 +44,6 @@ namespace ImGui {
 }
 #endif
 
-//inline std::chrono::steady_clock::time_point now() { return std::chrono::steady_clock::now(); }
-//inline double duration_to_double(std::chrono::steady_clock::duration d) { return std::chrono::duration<double>(d).count(); }
-
 std::unique_ptr<gl::Window> App::makeWindow() {
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -62,35 +59,49 @@ std::unique_ptr<gl::Window> App::makeWindow() {
 	return res;
 }
 
-/*
-send: signals, id (, name, audio_frames(, pk_size, pk[n]))
-*/
+template<bool lock>
+bool App::isHost() {
+	if constexpr (lock) {
+		std::lock_guard lock(mtx_users);
+		return users[client.Id()].is_host.load(std::memory_order_acquire);
+	}
+	else {
+		return users[client.Id()].is_host.load(std::memory_order_acquire);
+	}
+}
+
+bool App::clientClosed() {
+	std::lock_guard lock(mtx_close);
+	return client.Closed();
+}
+
 void App::Receive() {
 	H264Decoder decoder;
 
-	//ad_player.Start();
 	audioPlayer.start();
+	DEFER{ [this]() {
+		audioPlayer.stop();
+		p_show.wait_threads.release();
+	}};
+
 	struct {
 		Signal signals{};
 		net::socket_t id{};
 		std::string other_name{};
+		bool is_host_from_server;
+		bool is_host_from_client;
+		net::socket_t wanna_kick_off;
 		std::vector<float> audioFrames;
 		int32_t pk_size{};
 		std::vector<uint8_t> pk{};
 	} rv;
-	while (!close_signal) {
-		{
-			std::lock_guard lock(mtx_close);
-			if (client.Closed())
-				break;
-		}
 
-		// if closed, remove it and reset choice
-		//auto signals = client.ReceiveParseTo<Signal>();
-		client.ReceiveBy(rv.signals);
+	while (!p_show.ended() && !clientClosed()) {
+		bool recv_ok{true};
+		recv_ok &= client.ReceiveBy(rv.signals);
+		recv_ok &= client.ReceiveBy(rv.id);
+		if (!recv_ok) [[unlikely]] { break; }
 		if (rv.signals & signal_closed) {
-			//auto id = client.ReceiveParseTo<net::socket_t>();
-			client.ReceiveBy(rv.id);
 			{
 				std::lock_guard lock(mtx_users);
 				auto count = std::erase_if(users, [&](auto& user) { return user.first == rv.id;});
@@ -99,30 +110,34 @@ void App::Receive() {
 			continue;
 		}
 
-		//auto id = client.ReceiveParseTo<net::socket_t>();
-		//auto other_name = client.ReceiveString();
-		//auto frames = client.ReceiveVec<float>();
-		client.ReceiveBy(rv.id);
-		client.ReceiveBy(rv.other_name);
-		client.ReceiveBy(rv.audioFrames);
+		recv_ok &= client.ReceiveBy(rv.other_name);
+		recv_ok &= client.ReceiveBy(rv.is_host_from_server);
+		recv_ok &= client.ReceiveBy(rv.is_host_from_client);
+		if (!recv_ok) [[unlikely]] { break; }
+		if (rv.is_host_from_client) {
+			recv_ok &= client.ReceiveBy(rv.wanna_kick_off);
+		}
+		recv_ok &= client.ReceiveBy(rv.audioFrames);
+		if (!recv_ok) [[unlikely]] { break; }
+
+		if (rv.wanna_kick_off == client.Id()) {
+			p_show.setEnd(true, ShowPara::End::kickOff);
+		}
 		{
 			std::lock_guard lock(mtx_users);
 			auto [itr, first] = users.try_emplace(rv.id);
 			itr->second.name = rv.other_name;
 			users[rv.id].audioBuf.push(rv.audioFrames.begin(), rv.audioFrames.end());
+			users[rv.id].is_host.store(rv.is_host_from_server, std::memory_order_release);
 		}
 
-		if (rv.signals & signal_choiceNotMatch) {
-			continue;
-		}
-
+		if (rv.signals & signal_choiceNotMatch) { continue; }
 
 		// each packet
-		//auto pk_size = client.ReceiveParseTo<int32_t>();
-		client.ReceiveBy(rv.pk_size);
+		if (!client.ReceiveBy(rv.pk_size)) [[unlikely]] { break; }
 		for (int i = 0;i < rv.pk_size;++i) {
 			//auto pk = client.Receive();
-			client.ReceiveBy(rv.pk);
+			if (!client.ReceiveBy(rv.pk)) [[unlikely]] { break; }
 			auto frames = decoder.DecodePacket(rv.pk);
 			if (!frames.empty()) {
 				std::lock_guard<std::mutex> lock(mtx_video_frames);
@@ -148,46 +163,34 @@ void App::Receive() {
 		}
 
 	}
-	{
-		std::lock_guard lock(mtx_close);
-		client.Close();
-	}
 }
 
-/*
-recv: id, name, audio_frames, choose_socket, pk_size, pk[n]
-*/
 void App::Send() {
+	DEFER{
+		[this]() {p_show.wait_threads.release();}
+	};
 	ScreenCapture capture;
-	if (!capture.Initialize()) {
-		std::cout << "capture init failed\n";
-		exit(1);
-	}
+	assert(capture.Initialize());
 
 	while (!capture.CaptureFrame());
-	const int w = capture.Width();
-	const int h = capture.Height();
-	constexpr int fps = 30;
-	constexpr int bitrate = 4000000;
-	ST::H264Encoder encoder(w, h, fps, bitrate);
+	const int w = capture.Width() & ~1;
+	const int h = capture.Height() & ~1;
+	ui.video.encode.width.store(w, std::memory_order_release);
+	ui.video.encode.height.store(h, std::memory_order_release);
+	ui.video.encode.wait_wh.release();
+	ST::H264Encoder encoder(w, h, ui.video.encode.fps, ui.video.encode.bitrate);
 
 	audio::Capture ad_cpt{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, audio::bufSec };
 	ad_cpt.Start();
 
 	auto last_time = std::chrono::steady_clock::now();
-	loop{
+	while(!p_show.ended() && !clientClosed()){
 		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-			std::chrono::duration<double>(1.0 / max_fps_data.load(std::memory_order_acquire))
+			std::chrono::duration<double>(1.0 / ui.send.fps.load(std::memory_order_acquire))
 		);
 		auto next_frame = last_time + target_interval;
 		std::this_thread::sleep_until(next_frame);
 		last_time = next_frame;
-
-		{
-			std::lock_guard lock(mtx_close);
-			if (client.Closed())
-				break;
-		}
 
 		if (!capture.CaptureFrame()) {
 			continue;
@@ -198,11 +201,25 @@ void App::Send() {
 			continue;
 		}
 
-		auto packets = encoder.EncodeFrame(rgba);
+		std::vector<std::vector<uint8_t>> packets;
+		{
+			std::lock_guard lock(ui.video.encode.mtx);
+			encoder.Reset(w, h, ui.video.encode.width, ui.video.encode.height, ui.video.encode.fps, ui.video.encode.bitrate);
+			packets = encoder.EncodeFrame(rgba);
+		}
 		int32_t pk_size = (int32_t)packets.size();
 
+		bool is_host_from_client = isHost<true>();
 		client.Send(client.Id());
-		client.Send(logger.name);
+		{
+			std::lock_guard lock(logger.mtx_name);
+			client.Send(logger.name);
+		}
+		client.Send(is_host_from_client);
+		if (is_host_from_client) {
+			client.Send(ui.account.wanna_kick_off.load(std::memory_order_acquire));
+			ui.account.wanna_kick_off.store(net::invalid_socket, std::memory_order_release);
+		}
 		client.Send(ad_cpt.Frames());//move
 		client.Send(chosen_user.load(std::memory_order_acquire));
 		client.Send(pk_size);
@@ -215,6 +232,10 @@ void App::Send() {
 
 void App::audioMix()
 {
+	DEFER{
+		[this]() { p_show.wait_threads.release(); }
+	};
+
 	const size_t samples =
 		audio::mixPeriods *
 		audio::periodSizeInFrames *
@@ -223,12 +244,7 @@ void App::audioMix()
 	std::vector<float> mixBuf(samples);
 	std::vector<float> getBuf(samples);
 
-	for (;;) {
-
-		{
-			std::lock_guard lock(mtx_close);
-			if (client.Closed()) { break; }
-		}
+	while(!p_show.ended() && !clientClosed()) {
 
 		std::this_thread::sleep_for(5ms);
 
@@ -306,13 +322,12 @@ void App::audioMix()
 
 void App::asrRecv()
 {
+	DEFER{
+		[this]() {p_show.wait_threads.release();}
+	};
 	std::vector<float> audioBuf;
-	for (;;) {
+	while(!p_show.ended() && !clientClosed()) {
 		std::this_thread::sleep_for(200ms);
-		{
-			std::lock_guard lock(mtx_close);
-			if (client.Closed()) { break; }
-		}
 
 		{
 			std::lock_guard lock(mtx_audioFramesLong);
@@ -323,15 +338,7 @@ void App::asrRecv()
 
 		int out_bytes = 0;
 
-		println(
-			"asr.transcribe begin, "
-			<< "samples = "
-			<< audioBuf.size()
-			<< ", seconds = "
-			<< static_cast<double>(
-				audioBuf.size()
-				) / 16000.0
-		);
+		// println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<double>( audioBuf.size() ) / 16000.0 );
 
 		const char* str = plug.asr.transcribe( audioBuf.data(), static_cast<int>( audioBuf.size() ), &out_bytes );
 		/*
@@ -357,17 +364,50 @@ void App::asrRecv()
 	}
 }
 
+void App::ShowPara::setEnd(bool ended, End showEnd) {
+	m_ended.store(ended, std::memory_order_release);
+	m_showEnd = showEnd;
+}
+
+void App::ShowPara::restore() {
+	m_ended.store(false, std::memory_order_release);
+	m_showEnd = End::Default;
+}
+
+void App::restoreAfterShow() {
+	p_show.restore();
+	users.clear();
+}
+
 App::Page App::Show() {
+
 	chosen_user.store(client.Id(), std::memory_order_release);
 	{
 		std::lock_guard lock2{ mtx_users };
 		auto [itr, first] = users.try_emplace(chosen_user.load(std::memory_order_acquire));
 		itr->second.name = logger.name;
 	}
-	std::jthread audioMix_thread{ &App::audioMix, this };
-	std::jthread send_thread{ &App::Send, this };
-	std::jthread recv_thread{ &App::Receive, this };
-	std::jthread asrRecv_thread{ &App::asrRecv, this };
+
+	constexpr size_t thread_count = 4;
+
+	DEFER{ [this, thread_count]() {
+		client.Close();
+		for (size_t i = 0;i < thread_count;++i) {
+			p_show.wait_threads.acquire();
+		}
+		restoreAfterShow();
+	}};
+
+	std::array<std::jthread, thread_count> threads{
+		std::jthread{ &App::audioMix, this },
+		std::jthread{ &App::Send, this },
+		std::jthread{ &App::Receive, this },
+		std::jthread{ &App::asrRecv, this },
+	};
+
+	ui.video.encode.wait_wh.acquire();
+
+	//assert(thread_count == threads.size());
 
 	glfwSetWindowTitle(window->m_get, ("client: " + logger.name).c_str());
 
@@ -419,32 +459,19 @@ void main(){
 	const auto DEFAULT_BK_COLOR = style->Colors[ImGuiCol_WindowBg];
 #endif
 
-
-	struct swapBuffers {
-		gl::Window* window;
-		swapBuffers(gl::Window* tar) : window{ tar } {}
-		~swapBuffers() { window->swapBuffers(); }
-	};
-
-
 	double d_time = 0;
 	float fps = 0;
 	bool show_settings = true;
+	char rename[256]{};
 
 	auto last_time = std::chrono::steady_clock::now();
 	auto renderDealing = [&]() {
 		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-			std::chrono::duration<double>(1.0 / max_fps_video.load(std::memory_order_acquire))
+			std::chrono::duration<double>(1.0 / ui.video.fps.load(std::memory_order_acquire))
 		);
 		auto next_frame = last_time + target_interval;
 		std::this_thread::sleep_until(next_frame);
 		last_time = next_frame;
-
-		{
-			std::lock_guard lock(mtx_close);
-			if (client.Closed())
-				return;
-		}
 
 #if USE_IMGUI
 		// Start the Dear ImGui frame
@@ -459,7 +486,9 @@ void main(){
 		vaoImg.bind();
 		gl::draw(eboImg, gl::DrawMode::TRIANGLES);
 
-		swapBuffers swap_buffers{ window.get() }; // prevent continue swapbuffers
+		DEFER {
+			[this]() {window->swapBuffers();}
+		};
 
 #if USE_IMGUI
 		ImGui::DockingSpace();
@@ -468,51 +497,113 @@ void main(){
 		if (ImGui::IsKeyPressed(ImGuiKey_Escape))
 			show_settings = !show_settings;
 
-		if (show_settings) {
-			ImGui::Begin((char*)u8"设置");
-			uint32_t const_room_id = logger.room_id;
-			ImGui::InputScalar("room_id", ImGuiDataType_U32, &const_room_id);
+	if (show_settings) {
+		ImGui::Begin((char*)u8"settings");
+		if (ImGui::TreeNode("send")) {
+			bool val;
+			// share_video
+			val = ui.send.share_video.load(std::memory_order_acquire);
+			ImGui::Checkbox("share_video", &val);
+			ui.send.share_video.store(val, std::memory_order_release);
+			// share_audio
+			val = ui.send.share_audio.load(std::memory_order_acquire);
+			ImGui::Checkbox("share_audio", &val);
+			ui.send.share_audio.store(val, std::memory_order_release);
+			// fps
+			auto fd = ui.send.fps.load(std::memory_order_acquire);
+			ImGui::SliderScalar("fps", ImGuiDataType_Double, &fd, &MIN_MAX_FPS, &MAX_MAX_FPS);
+			ui.send.fps.store(fd, std::memory_order_release);
+			ImGui::TreePop();
+		}// send
+		if (ImGui::TreeNode("vedio")) {
+			// fps
 			if (d_time > 0.4) {
 				fps = ImGui::GetIO().Framerate;
 				d_time = 0;
 			}
 			ImGui::Text("FPS: %.3f", fps);
-			auto fd = max_fps_data.load(std::memory_order_acquire);
-			auto fv = max_fps_video.load(std::memory_order_acquire);
-			ImGui::SliderScalar("fps_data", ImGuiDataType_Double, &fd, &MIN_MAX_FPS, &MAX_MAX_FPS);
-			ImGui::SliderScalar("fps_video", ImGuiDataType_Double, &fv, &MIN_MAX_FPS, &MAX_MAX_FPS);
-			max_fps_data.store(fd, std::memory_order_release);
-			max_fps_video.store(fv, std::memory_order_release);
-			ImGui::Text("target:");
+			auto fv = ui.video.fps.load(std::memory_order_acquire);
+			ImGui::SliderScalar("fps", ImGuiDataType_Double, &fv, &MIN_MAX_FPS, &MAX_MAX_FPS);
+			ui.video.fps.store(fv, std::memory_order_release);
+			if (ImGui::TreeNode("encode")) {
+				// fps
+				int fps = ui.video.encode.fps.load(std::memory_order_acquire);
+				ImGui::SliderInt("fps", &fps, static_cast<int>(MIN_MAX_FPS), static_cast<int>(MAX_MAX_FPS));
+				ui.video.encode.fps.store(fps, std::memory_order_release);
+				// bitrate
+				int bitrate = ui.video.encode.bitrate.load(std::memory_order_acquire);
+				ImGui::SliderInt("bitrate", &bitrate, video::min_bitrate, video::max_bitrate);
+				ui.video.encode.bitrate.store(bitrate, std::memory_order_release);
+				ImGui::TreePop();
+				// width
+				int w = ui.video.encode.width.load(std::memory_order_acquire);
+				ImGui::SliderInt("width", &w, 400, 10000);
+				ui.video.encode.width.store(w, std::memory_order_release);
+				// height
+				int h = ui.video.encode.height.load(std::memory_order_acquire);
+				ImGui::SliderInt("height", &h, 400, 10000);
+				ui.video.encode.height.store(h, std::memory_order_release);
+			}// encode
+			ImGui::TreePop();
+		}// vedio
+		if (ImGui::TreeNode("account")) {
+			// room id
+			uint32_t const_room_id = logger.room_id;
+			ImGui::InputScalar("room_id", ImGuiDataType_U32, &const_room_id);
+			// rename
+			ImGui::InputText("##rename", rename, sizeof(rename), ImGuiInputTextFlags_CharsNoBlank);
+			ImGui::SameLine();
+			if (ImGui::Button("rename")) {
+				{
+					std::lock_guard lock(logger.mtx_name);
+					logger.name = rename;
+				}
+				glfwSetWindowTitle(window->m_get, ("client: " + logger.name).c_str());
+			}
 			{
 				std::lock_guard lock(mtx_users);
 				auto chosen = users.find(chosen_user.load(std::memory_order_acquire));
 				assert(chosen != users.end());
-				if (ImGui::BeginCombo("##combo", users[chosen->first].name.c_str())) {
+				auto name_chosen = users[chosen->first].name + (users[chosen->first].is_host.load(std::memory_order_acquire) ? "(host)" : "");
+				if (ImGui::BeginCombo("target", name_chosen.c_str())) {
 					for (const auto& user : users) {
-						if (ImGui::Selectable(user.second.name.c_str())) {
+						auto name = user.second.name + (user.second.is_host.load(std::memory_order_acquire) ? "(host)" : "");
+						if (ImGui::Selectable(name.c_str())) {
 							chosen_user.store(user.first, std::memory_order_release);
 							println("chosen socket: " << user.first);
 						}
 					}
 					ImGui::EndCombo();
 				}
+				if (isHost<false>() && ImGui::BeginCombo("kick_off", "invalid user")) {
+					(void)ImGui::Selectable("invalid user");
+					for (const auto& user : users) {
+						if (user.second.is_host.load(std::memory_order_acquire)) {
+							continue;
+						}
+						if (ImGui::Selectable(user.second.name.c_str())) {
+							ui.account.wanna_kick_off.store(user.first, std::memory_order_release);
+							println("kick off socket: " << user.first);
+						}
+					}
+					ImGui::EndCombo();
+				}
 			}
-			//ImGui::Text("get: %s", speechWords.c_str());
-			ImGui::BeginChild("##speech", ImVec2(-FLT_MIN, 150), true,
-				ImGuiWindowFlags_HorizontalScrollbar);
-
+			ImGui::TreePop();
+		}// account
+		if (ImGui::TreeNode("plugin")) {
+			ImGui::BeginChild("##speech", ImVec2(-FLT_MIN, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
 			ImGui::PushTextWrapPos(0.0f);   // 0 表示按窗口右边界换行
 			{
 				std::lock_guard lock(mtx_speechWords);
 				ImGui::TextUnformatted(speechWords.c_str());
 			}
 			ImGui::PopTextWrapPos();
-
 			ImGui::EndChild();
-			ImGui::End();// settings
-		}
-		// ============ setting window ============ 
+			ImGui::TreePop();
+		}// plugin
+		ImGui::End();
+	}// settings
 
 
 		// ============ main window ============ 
@@ -575,18 +666,42 @@ void main(){
 		auto renderDealing = *static_cast<renderFuncType*>(user->any_usage);
 		renderDealing();
 		});
-	while (!window->shouldClose()) {
-		{
-			std::lock_guard lock(mtx_close);
-			if (client.Closed())
-				break;
-		}
+	while (!p_show.ended() && !clientClosed()) {
+		if (window->shouldClose()) { exit(1); }
 		glfwPollEvents();
 		renderDealing();
 	}
-	println("end ok");
-	close_signal.store(true, std::memory_order_release);
-	return Page::never;
+
+	println("show ended");
+	switch (p_show.showEnd()) {
+	case ShowPara::End::clientClosed:
+		println("enter clientClosed");
+		return makeTmp("clientClosed", "your tcp socket closed in the middle.", Page::connectToServer);
+		break;
+	case ShowPara::End::kickOff:
+		println("enter kickOff");
+		return makeTmp("kickOff", "you are kicked off by the room host.", Page::connectToServer);
+		break;
+	default:
+		assert(false);
+	}
+	return Page::Tmp;
+}
+
+App::Page App::Tmp() {
+	while (1) {
+		PageRenderGuard pageRenderGuard{ this, p_tmp.title.c_str(), 20};
+		ImGui::Text(p_tmp.content.c_str());
+		if (ImGui::Button("<-")) { break; }
+	}
+	return p_tmp.back;
+}
+
+App::Page App::makeTmp(const std::string& title, std::string content, Page back) {
+	p_tmp.title = title;
+	p_tmp.content = content;
+	p_tmp.back = back;
+	return Page::Tmp;
 }
 
 void App::pageRenderBegin(const char* title, int sleepTime) {
@@ -635,7 +750,7 @@ App::Page App::chooseMode() {
 			return Page::makeRoom;
 		}
 	}
-	return Page::never;
+	return Page::Tmp;
 }
 
 App::Page App::makeRoom() {
@@ -656,7 +771,7 @@ App::Page App::makeRoom() {
 		client.Send(logger.passwd);
 		uint32_t room_id0{};
 		if (!client.ReceiveBy(room_id0)) {
-			return Page::serverStatusError;
+			return makeTmpServerStatusError();
 		}
 		logger.room_id = room_id0;
 		return Page::Show;
@@ -685,11 +800,11 @@ App::Page App::enterRoom() {
 			client.Send(p3.room_id);
 			client.Send(p3.passwd);
 			bool room_id_ok{};
-			if (!client.ReceiveBy(room_id_ok))	{ return Page::serverStatusError; }
+			if (!client.ReceiveBy(room_id_ok)) { return makeTmpServerStatusError(); }
 			if (!room_id_ok)					{ room_id_not_exist = true; continue; }
 			else { room_id_not_exist = false; }
 			bool passwd_ok{};
-			if (!client.ReceiveBy(passwd_ok))	{ return Page::serverStatusError; }
+			if (!client.ReceiveBy(passwd_ok))	{ return makeTmpServerStatusError(); }
 			if (!passwd_ok)						{ passwd_wrong = true; continue; }
 			else { passwd_wrong = false; }
 			break;
@@ -698,13 +813,6 @@ App::Page App::enterRoom() {
 	logger.passwd = p3.passwd;
 	logger.room_id = p3.room_id;
 	return Page::Show;
-}
-
-App::Page App::serverStatusError() {
-	while (1) {
-		PageRenderGuard pageRenderGuard{ this, "server status error", 20 };
-		ImGui::Text("server status error. please close the window");
-	}
 }
 
 App::Page App::connectToServer() {
@@ -754,7 +862,8 @@ void App::run() {
 		case Page::makeRoom: page = makeRoom(); break;
 		case Page::enterRoom: page = enterRoom(); break;
 		case Page::Show: page = Show(); break;
-		case Page::serverStatusError: page = serverStatusError(); break;
+		//case Page::serverStatusError: page = serverStatusError(); break;
+		case Page::Tmp: page = Tmp(); break;
 		}
 	}
 
@@ -815,6 +924,11 @@ App::~App() {
 	ImGui_ImplOpenGL3_Shutdown();
 	ImGui_ImplGlfw_Shutdown();
 	ImGui::DestroyContext();
+#endif
+
+#ifndef NDEBUG
+	println("end ok(press enter to finish)");
+	//(void)getchar();
 #endif
 }
 

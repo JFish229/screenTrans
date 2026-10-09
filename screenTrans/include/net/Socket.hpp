@@ -85,7 +85,7 @@ namespace net {
 
 		socket_t id() { return m_id; }
 		void Close();
-		bool Closed() { return m_id == invalid_socket; }
+		[[nodiscard]] bool Closed() { return m_id == invalid_socket; }
 	private:
 		socket_t m_id = invalid_socket;
 	};

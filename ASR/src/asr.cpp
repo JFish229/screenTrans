@@ -36,7 +36,7 @@ int plugin_asr_init(const char* model_path) {
     std::lock_guard<std::mutex> lock(g_mtx);
 
     if (g_ctx) {
-        whisper_free(g_ctx);
+        whisper_free(g_ctx);;
         g_ctx = nullptr;
     }
 

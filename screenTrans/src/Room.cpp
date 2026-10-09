@@ -15,20 +15,28 @@
 #else
 #	define PL
 #endif
+
+using net::tcp::Client;
+
 //#define pv(x) std::cout<< #x << ": " << x << "\n"
 
 /*
-recv: id, name, audio_frames, choose_socket, pk_size, pk[n]
-send: signals, id (, name, audio_frames (, pk_size, pk[n]))
+recv: signals, id(, name, audio_frames(, pk_size, pk[n]))
+send: signals, id(, name, is_host, audio_frames(, pk_size, pk[n]))
 
 if closed
 	send: signals, id
 
 if choiceNotMatch
-	send: signals, id, name, audio_frames
+	send: signals, id, name, ...
 
 */
-void Room::sendMsg(ClientMtx* clientMtx, Room* room) {
+void Room::threadSendMsg(ClientMtx* clientMtx) {
+	{
+		std::lock_guard lock(m_mtx_client_sockets);
+		m_host_skt.store(m_client_sockets.empty() ? net::invalid_socket : m_client_sockets[0]->client.Id(), std::memory_order_release);
+	}
+
 	net::socket_t save_id = net::invalid_socket;
 	Client* client = &clientMtx->client;
 
@@ -42,6 +50,8 @@ void Room::sendMsg(ClientMtx* clientMtx, Room* room) {
 	struct {
 		net::socket_t id;
 		std::string name;
+		bool is_host_from_client;
+		net::socket_t wanna_kick_off;
 		std::vector<float> audio_frames;
 		net::socket_t choose_socket;
 		int32_t pk_size;
@@ -51,6 +61,10 @@ void Room::sendMsg(ClientMtx* clientMtx, Room* room) {
 		if (client->Closed() && closedSignalSent.load(std::memory_order_acquire)) { break; }
 		client->ReceiveBy(rv.id);
 		client->ReceiveBy(rv.name);
+		client->ReceiveBy(rv.is_host_from_client);
+		if (rv.is_host_from_client) {
+			client->ReceiveBy(rv.wanna_kick_off);
+		}
 		client->ReceiveBy(rv.audio_frames);
 		client->ReceiveBy(rv.choose_socket);
 		client->ReceiveBy(rv.pk_size);
@@ -64,8 +78,8 @@ void Room::sendMsg(ClientMtx* clientMtx, Room* room) {
 
 			if (!(flags & flag_clientChoiceRecorded) || (rv.choose_socket != last_chosen_socket)) {
 				{
-					std::lock_guard lock(room->m_mutex_choices);
-					room->m_choices_of[client->Id()] = rv.choose_socket;
+					std::lock_guard lock(m_mutex_choices);
+					m_choices_of[client->Id()] = rv.choose_socket;
 				}
 				last_chosen_socket = rv.choose_socket;
 				flags |= flag_clientChoiceRecorded;
@@ -78,8 +92,8 @@ void Room::sendMsg(ClientMtx* clientMtx, Room* room) {
 			}
 		}
 		{
-			std::shared_lock lock(room->m_mtx_client_sockets);
-			std::for_each(std::execution::par, room->m_client_sockets.begin(), room->m_client_sockets.end(), 
+			std::shared_lock lock(m_mtx_client_sockets);
+			std::for_each(std::execution::par, m_client_sockets.begin(), m_client_sockets.end(), 
 			[&, packet_count](std::unique_ptr<ClientMtx>& cm) {
 				std::lock_guard lock(cm->mtx);
 				Client* c = &cm->client;
@@ -93,16 +107,22 @@ void Room::sendMsg(ClientMtx* clientMtx, Room* room) {
 
 				bool choice_isnt_me;
 				{
-					std::shared_lock lock_choices(room->m_mutex_choices);
-					auto choice = room->m_choices_of.find(c->Id());
-					choice_isnt_me = choice == room->m_choices_of.end() || choice->second != rv.id;
+					std::shared_lock lock_choices(m_mutex_choices);
+					auto choice = m_choices_of.find(c->Id());
+					choice_isnt_me = choice == m_choices_of.end() || choice->second != rv.id;
 				}
 				if (choice_isnt_me) { c->Send(signal_choiceNotMatch); }
 				else				{ c->Send(signal_none); }
 
+				bool is_host_from_server = m_host_skt.load(std::memory_order_acquire) == client->Id();
 				c->Send(rv.id);
 				c->Send(rv.name);
-				c->Send(rv.audio_frames);
+				c->Send(is_host_from_server);
+				c->Send(rv.is_host_from_client);
+				if (rv.is_host_from_client) {
+					c->Send(rv.wanna_kick_off);
+				}
+				c->Send(c->Id() == client->Id() ? std::vector<float>{} : rv.audio_frames);
 				if (choice_isnt_me) {
 					return;
 				}
@@ -115,23 +135,20 @@ void Room::sendMsg(ClientMtx* clientMtx, Room* room) {
 	}
 
 	println("closed client socket: " << save_id);
-	room->m_cs_dead_threads.release();
+	m_cs_dead_threads.release();
 }
 
-void Room::deleteThread(Room* room) {
+void Room::threadDeleteThread() {
 	for (;;) {
-		room->m_cs_dead_threads.acquire();
+		m_cs_dead_threads.acquire();
+		if (id() == invalid_id) { break; }
 		{
-			std::lock_guard lock(room->m_mtx_id);
-			if (room->m_id == invalid_id)
-				break;
-		}
-		{
-			std::lock_guard lock_cs(room->m_mtx_client_sockets);
-			for (size_t i = 0; i < room->m_client_sockets.size(); ) {
-				if (room->m_client_sockets[i]->client.Closed()) {
-					room->m_clients_threads.erase(room->m_clients_threads.begin() + i);
-					room->m_client_sockets.erase(room->m_client_sockets.begin() + i);
+			std::lock_guard lock_cs(m_mtx_client_sockets);
+			for (size_t i = 0; i < m_client_sockets.size(); ) {
+				if (m_client_sockets[i]->client.Closed()) {
+					m_clients_threads.erase(m_clients_threads.begin() + i);
+					m_client_sockets.erase(m_client_sockets.begin() + i);
+					m_host_skt.store(m_client_sockets.empty() ? net::invalid_socket : m_client_sockets[0]->client.Id(), std::memory_order_release);
 				}
 				else {
 					++i;
@@ -143,22 +160,19 @@ void Room::deleteThread(Room* room) {
 
 Room::Room(const std::optional<uint32_t>& passwd) :
 	m_passwd(passwd),
-	m_delete_thread_thread(deleteThread, this)
+	m_delete_thread_thread(&Room::threadDeleteThread, this)
 {
 	std::random_device rd;
 	std::mt19937 gen(rd());
 	std::uniform_int_distribution<uint32_t> dist(1, 0xFFFFFFFF);
-	{
-		std::lock_guard lock(m_mtx_id);
-		while (m_id == invalid_id) {
-			m_id = dist(gen);
-			std::lock_guard lock(mtx_ids);
-			if (Room::ids.end() != std::lower_bound(Room::ids.begin(), Room::ids.end(), m_id)) {
-				m_id = invalid_id;
-			}
-			else {
-				ids.push_back(m_id);
-			}
+	while (id() == invalid_id) {
+		m_id.store(dist(gen), std::memory_order_release);
+		std::lock_guard lock(mtx_ids);
+		if (Room::ids.end() != std::lower_bound(Room::ids.begin(), Room::ids.end(), id())) {
+			m_id.store(invalid_id, std::memory_order_release);
+		}
+		else {
+			ids.push_back(id());
 		}
 	}
 	{
@@ -170,10 +184,7 @@ Room::Room(const std::optional<uint32_t>& passwd) :
 Room::~Room() {
 	assert(m_client_sockets.size() == 0);
 	//end and join m_delete_thread_thread
-	{
-		std::lock_guard lock(m_mtx_id);
-		m_id = Room::invalid_id;
-	}
+	m_id.store(Room::invalid_id, std::memory_order_release);
 	m_cs_dead_threads.release();
 }
 
@@ -187,6 +198,6 @@ void Room::pushClient(Client c) {
 		std::unique_ptr<ClientMtx> client = std::make_unique<ClientMtx>(std::move(c));
 		auto ptr = client.get();
 		m_client_sockets.emplace_back(std::move(client));
-		m_clients_threads.emplace_back(std::jthread(sendMsg, ptr, this));
+		m_clients_threads.emplace_back(std::jthread(&Room::threadSendMsg, this, ptr));
 	}
 }
