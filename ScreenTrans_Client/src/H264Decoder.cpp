@@ -135,8 +135,10 @@ namespace ST {
             out.width = width;
             out.height = height;
 
+            constexpr int padding_size = AV_INPUT_BUFFER_PADDING_SIZE;
+
             out.rgba.resize(
-                width * height * 4
+                width * height * 4 + padding_size
             );
 
             uint8_t* dst[1] = {
@@ -157,6 +159,7 @@ namespace ST {
                 stride
             );
 
+            out.rgba.resize(out.rgba.size() - padding_size);
             frames.push_back(
                 std::move(out)
             );
@@ -204,7 +207,7 @@ namespace ST {
             m_sws = nullptr;
         }
 
-        if (m_pkt)
+        if (m_pkt)  
         {
             av_packet_free(&m_pkt);
             m_pkt = nullptr;

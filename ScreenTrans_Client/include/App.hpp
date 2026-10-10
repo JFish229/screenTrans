@@ -103,7 +103,6 @@ struct Defer {
 #define NAME(name) CONCAT(CONCAT(name##_, __LINE__), __)
 #define DEFER Defer NAME(defer)
 
-
 class App {
 private:
 	static std::unique_ptr<gl::Window> makeWindow();
@@ -153,7 +152,7 @@ private:
 	Page makeRoom();
 
 	struct P3 {
-		uint32_t room_id{ Room::invalid_id };
+		uint32_t room_id{ room::invalid_id };
 		uint32_t passwd{ Room::invalid_passwd };
 	}p3;
 	Page enterRoom();
@@ -192,7 +191,7 @@ private:
 		return makeTmp("server_status_error", "server status error. please reconnect or close the window", Page::connectToServer);
 	}
 
-public:
+private:
 	net::InitGuard initGuard{};
 	gl::GlfwInitGuard glfwInitGuard;
 	std::unique_ptr<gl::Window> window{ makeWindow() };
@@ -206,7 +205,8 @@ public:
 	struct {
 		std::mutex mtx_name;
 		std::string name{};
-		uint32_t room_id{ Room::invalid_id };
+		std::atomic<user::id_t> id{ user::invalid_id };
+		uint32_t room_id{ room::invalid_id };
 		uint32_t passwd{ Room::invalid_passwd };
 	} logger;
 	Page page{ Page::connectToServer };
@@ -220,13 +220,13 @@ public:
 
 	std::queue<ST::DecodedFrame> total_video_frames;
 	std::atomic<bool> close_signal = false;
-	std::atomic<net::socket_t> chosen_user; // init with self
+	std::atomic<user::id_t> chosen_user; // init with self
 	struct User {
 		std::atomic<bool> is_host{ false };
 		std::string name;
 		boost::lockfree::spsc_queue<float> audioBuf{ audio::sampleRate * audio::channels * audio::bufSec };
 	};
-	std::unordered_map < net::socket_t, User > users; // init with self
+	std::unordered_map < user::id_t, User > users; // init with self
 	std::vector<float> audioFramesLong{};
 	std::string speechWords;
 
@@ -254,7 +254,9 @@ public:
 		} video;
 		struct {
 			std::atomic<bool> is_kicked_off{ false };
-			std::atomic<net::socket_t> wanna_kick_off{ net::invalid_socket };
+			std::atomic<user::id_t> wanna_kick_off{ user::invalid_id };
+			std::atomic<uint32_t> room_passwd{ Room::invalid_passwd };
+			std::atomic<uint32_t> set_room_passwd{ Room::invalid_passwd };
 		} account;
 	} ui;
 

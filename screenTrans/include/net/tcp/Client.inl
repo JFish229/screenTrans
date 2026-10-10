@@ -278,7 +278,6 @@ namespace tcp {
 
 	template<CIsVector Vec>
 	inline bool Client::ReceiveBy(Vec& out) {
-		bool res{ true };
 		auto o_msg_bytes = recv_bytes();
 		if (!o_msg_bytes) { return false; }
 		msg_size msg_bytes = *o_msg_bytes;
@@ -286,7 +285,7 @@ namespace tcp {
 		static_assert(!std::same_as<elem_t, bool>);
 		if (msg_bytes % sizeof(elem_t) != 0) [[unlikely]] {
 			NET_SOCKET_SET_ERROR("Receive vector but elem not match size");
-			res = false;
+			return false;
 		}
 		out.resize(msg_bytes / sizeof(elem_t));
 		if (!recv_msg(out.data(), msg_bytes)) {
@@ -295,7 +294,7 @@ namespace tcp {
 		if constexpr (sizeof(elem_t) > 1) {
 			std::ranges::for_each(out, [](elem_t& e) { e = network_to_host(e); });
 		}
-		return res;
+		return true;
 	}
 
 	inline std::optional<msg_size> Client::recv_all(void* buf, msg_size len) {

@@ -144,8 +144,6 @@
     <ClCompile Include="src\audio\Capture.cpp" />
     <ClCompile Include="src\audio\Player.cpp" />
     <ClCompile Include="src\audio\User.cpp" />
-    <ClCompile Include="src\H264Decoder.cpp" />
-    <ClCompile Include="src\H264Encoder.cpp" />
     <ClCompile Include="src\net\tcp\Server.cpp" />
     <ClCompile Include="src\Room.cpp" />
     <ClCompile Include="thirdparty\include\miniaudio\miniaudio.cpp" />
@@ -184,8 +182,6 @@
     <ClInclude Include="include\gl\VertexBuffer.h" />
     <ClInclude Include="include\gl\VertexBufferLayout.h" />
     <ClInclude Include="include\gl\Window.h" />
-    <ClInclude Include="include\H264Decoder.h" />
-    <ClInclude Include="include\H264Encoder.h" />
     <ClInclude Include="include\net\tcp\Client.hpp" />
     <ClInclude Include="include\plugin\Loader.hpp" />
     <ClInclude Include="include\Room.h" />

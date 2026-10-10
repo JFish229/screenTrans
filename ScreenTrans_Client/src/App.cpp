@@ -14,6 +14,8 @@ extern "C" {
 #endif//NDEBUG
 
 #include <inttypes.h>
+#include <atomic_imgui.hpp>
+
 
 #if USE_IMGUI
 namespace ImGui {
@@ -59,14 +61,14 @@ std::unique_ptr<gl::Window> App::makeWindow() {
 	return res;
 }
 
-template<bool lock>
+template<bool lock_users>
 bool App::isHost() {
-	if constexpr (lock) {
+	if constexpr (lock_users) {
 		std::lock_guard lock(mtx_users);
-		return users[client.Id()].is_host.load(std::memory_order_acquire);
+		return get(users[get(logger.id)].is_host);
 	}
 	else {
-		return users[client.Id()].is_host.load(std::memory_order_acquire);
+		return get(users[get(logger.id)].is_host);
 	}
 }
 
@@ -86,17 +88,28 @@ void App::Receive() {
 
 	struct {
 		Signal signals{};
-		net::socket_t id{};
+		user::id_t id{ user::invalid_id };
 		std::string other_name{};
-		bool is_host_from_server;
-		bool is_host_from_client;
-		net::socket_t wanna_kick_off;
-		std::vector<float> audioFrames;
+		bool is_host_from_server{};
+		uint32_t room_passwd{};
+		bool is_host_from_client{};
+		user::id_t wanna_kick_off{};
+		std::vector<float> audioFrames{};
 		int32_t pk_size{};
 		std::vector<uint8_t> pk{};
+		void restore() {
+			signals = 0;
+			id = user::invalid_id;
+			is_host_from_server = false;
+			room_passwd = Room::invalid_passwd;
+			is_host_from_client = false;
+			wanna_kick_off = user::invalid_id;
+			pk_size = 0;
+		}
 	} rv;
 
 	while (!p_show.ended() && !clientClosed()) {
+		rv.restore();
 		bool recv_ok{true};
 		recv_ok &= client.ReceiveBy(rv.signals);
 		recv_ok &= client.ReceiveBy(rv.id);
@@ -106,12 +119,17 @@ void App::Receive() {
 				std::lock_guard lock(mtx_users);
 				auto count = std::erase_if(users, [&](auto& user) { return user.first == rv.id;});
 			}
-			chosen_user.store(client.Id(), std::memory_order_release);
+			set(chosen_user, get(logger.id));
 			continue;
 		}
 
 		recv_ok &= client.ReceiveBy(rv.other_name);
 		recv_ok &= client.ReceiveBy(rv.is_host_from_server);
+		if (!recv_ok) [[unlikely]] { break; }
+		if (rv.is_host_from_server && get(logger.id) == rv.id) {
+			recv_ok &= client.ReceiveBy(rv.room_passwd);
+			set(ui.account.room_passwd, rv.room_passwd);
+		}
 		recv_ok &= client.ReceiveBy(rv.is_host_from_client);
 		if (!recv_ok) [[unlikely]] { break; }
 		if (rv.is_host_from_client) {
@@ -120,7 +138,7 @@ void App::Receive() {
 		recv_ok &= client.ReceiveBy(rv.audioFrames);
 		if (!recv_ok) [[unlikely]] { break; }
 
-		if (rv.wanna_kick_off == client.Id()) {
+		if (rv.wanna_kick_off == get(logger.id)) {
 			p_show.setEnd(true, ShowPara::End::kickOff);
 		}
 		{
@@ -128,7 +146,7 @@ void App::Receive() {
 			auto [itr, first] = users.try_emplace(rv.id);
 			itr->second.name = rv.other_name;
 			users[rv.id].audioBuf.push(rv.audioFrames.begin(), rv.audioFrames.end());
-			users[rv.id].is_host.store(rv.is_host_from_server, std::memory_order_release);
+			set(users[rv.id].is_host, rv.is_host_from_server);
 		}
 
 		if (rv.signals & signal_choiceNotMatch) { continue; }
@@ -136,7 +154,6 @@ void App::Receive() {
 		// each packet
 		if (!client.ReceiveBy(rv.pk_size)) [[unlikely]] { break; }
 		for (int i = 0;i < rv.pk_size;++i) {
-			//auto pk = client.Receive();
 			if (!client.ReceiveBy(rv.pk)) [[unlikely]] { break; }
 			auto frames = decoder.DecodePacket(rv.pk);
 			if (!frames.empty()) {
@@ -170,13 +187,16 @@ void App::Send() {
 		[this]() {p_show.wait_threads.release();}
 	};
 	ScreenCapture capture;
-	assert(capture.Initialize());
+	if (!capture.Initialize()) {
+		std::cerr << "capture.Initialize() error\n";
+		exit(1);
+	}
 
 	while (!capture.CaptureFrame());
 	const int w = capture.Width() & ~1;
 	const int h = capture.Height() & ~1;
-	ui.video.encode.width.store(w, std::memory_order_release);
-	ui.video.encode.height.store(h, std::memory_order_release);
+	set(ui.video.encode.width, w);
+	set(ui.video.encode.height, h);
 	ui.video.encode.wait_wh.release();
 	ST::H264Encoder encoder(w, h, ui.video.encode.fps, ui.video.encode.bitrate);
 
@@ -186,7 +206,7 @@ void App::Send() {
 	auto last_time = std::chrono::steady_clock::now();
 	while(!p_show.ended() && !clientClosed()){
 		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-			std::chrono::duration<double>(1.0 / ui.send.fps.load(std::memory_order_acquire))
+			std::chrono::duration<double>(1.0 / get(ui.send.fps))
 		);
 		auto next_frame = last_time + target_interval;
 		std::this_thread::sleep_until(next_frame);
@@ -204,24 +224,29 @@ void App::Send() {
 		std::vector<std::vector<uint8_t>> packets;
 		{
 			std::lock_guard lock(ui.video.encode.mtx);
-			encoder.Reset(w, h, ui.video.encode.width, ui.video.encode.height, ui.video.encode.fps, ui.video.encode.bitrate);
+			const bool resetOK = encoder.Reset(w, h, ui.video.encode.width, ui.video.encode.height, ui.video.encode.fps, ui.video.encode.bitrate);
+			set(ui.video.encode.width, encoder.Width());
+			set(ui.video.encode.height, encoder.Height());
 			packets = encoder.EncodeFrame(rgba);
 		}
-		int32_t pk_size = (int32_t)packets.size();
+		int32_t pk_size = static_cast<int32_t>(packets.size());
 
 		bool is_host_from_client = isHost<true>();
-		client.Send(client.Id());
+		assert(get(logger.id) != user::invalid_id);
+		client.Send(get(logger.id));
 		{
 			std::lock_guard lock(logger.mtx_name);
 			client.Send(logger.name);
 		}
 		client.Send(is_host_from_client);
 		if (is_host_from_client) {
-			client.Send(ui.account.wanna_kick_off.load(std::memory_order_acquire));
-			ui.account.wanna_kick_off.store(net::invalid_socket, std::memory_order_release);
+			client.Send(get(ui.account.set_room_passwd));
+			set(ui.account.set_room_passwd, Room::invalid_passwd);
+			client.Send(get(ui.account.wanna_kick_off));
+			set(ui.account.wanna_kick_off, user::invalid_id);
 		}
 		client.Send(ad_cpt.Frames());//move
-		client.Send(chosen_user.load(std::memory_order_acquire));
+		client.Send(get(chosen_user));
 		client.Send(pk_size);
 		for (auto& pk : packets) {
 			client.Send(pk);
@@ -365,12 +390,12 @@ void App::asrRecv()
 }
 
 void App::ShowPara::setEnd(bool ended, End showEnd) {
-	m_ended.store(ended, std::memory_order_release);
+	set(m_ended, ended);
 	m_showEnd = showEnd;
 }
 
 void App::ShowPara::restore() {
-	m_ended.store(false, std::memory_order_release);
+	set(m_ended, false);
 	m_showEnd = End::Default;
 }
 
@@ -381,10 +406,10 @@ void App::restoreAfterShow() {
 
 App::Page App::Show() {
 
-	chosen_user.store(client.Id(), std::memory_order_release);
+	set(chosen_user, get(logger.id));
 	{
 		std::lock_guard lock2{ mtx_users };
-		auto [itr, first] = users.try_emplace(chosen_user.load(std::memory_order_acquire));
+		auto [itr, first] = users.try_emplace(get(chosen_user));
 		itr->second.name = logger.name;
 	}
 
@@ -459,15 +484,29 @@ void main(){
 	const auto DEFAULT_BK_COLOR = style->Colors[ImGuiCol_WindowBg];
 #endif
 
+	int sc_width{};
+	int sc_height{};
+	{
+		GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+		assert(monitor);
+		const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+		assert(mode);
+		const_cast<int&>(sc_width) = mode->width;
+		const_cast<int&>(sc_height) = mode->height;
+	}
+
 	double d_time = 0;
 	float fps = 0;
 	bool show_settings = true;
-	char rename[256]{};
+	struct {
+		char rename[256]{};
+		uint32_t room_passwd{ Room::invalid_passwd };
+	} mid;
 
 	auto last_time = std::chrono::steady_clock::now();
 	auto renderDealing = [&]() {
 		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-			std::chrono::duration<double>(1.0 / ui.video.fps.load(std::memory_order_acquire))
+			std::chrono::duration<double>(1.0 / get(ui.video.fps))
 		);
 		auto next_frame = last_time + target_interval;
 		std::this_thread::sleep_until(next_frame);
@@ -500,19 +539,12 @@ void main(){
 	if (show_settings) {
 		ImGui::Begin((char*)u8"settings");
 		if (ImGui::TreeNode("send")) {
-			bool val;
 			// share_video
-			val = ui.send.share_video.load(std::memory_order_acquire);
-			ImGui::Checkbox("share_video", &val);
-			ui.send.share_video.store(val, std::memory_order_release);
+			COMP_ATOMIC(ImGui::Checkbox, "share_video", ui.send.share_video);
 			// share_audio
-			val = ui.send.share_audio.load(std::memory_order_acquire);
-			ImGui::Checkbox("share_audio", &val);
-			ui.send.share_audio.store(val, std::memory_order_release);
+			COMP_ATOMIC(ImGui::Checkbox, "share_audio", ui.send.share_audio);
 			// fps
-			auto fd = ui.send.fps.load(std::memory_order_acquire);
-			ImGui::SliderScalar("fps", ImGuiDataType_Double, &fd, &MIN_MAX_FPS, &MAX_MAX_FPS);
-			ui.send.fps.store(fd, std::memory_order_release);
+			COMP_ATOMIC_T(ImGui::SliderScalar, "fps", ImGuiDataType_Double, ui.send.fps, &MIN_MAX_FPS, &MAX_MAX_FPS);
 			ImGui::TreePop();
 		}// send
 		if (ImGui::TreeNode("vedio")) {
@@ -522,73 +554,78 @@ void main(){
 				d_time = 0;
 			}
 			ImGui::Text("FPS: %.3f", fps);
-			auto fv = ui.video.fps.load(std::memory_order_acquire);
-			ImGui::SliderScalar("fps", ImGuiDataType_Double, &fv, &MIN_MAX_FPS, &MAX_MAX_FPS);
-			ui.video.fps.store(fv, std::memory_order_release);
+			COMP_ATOMIC_T(ImGui::SliderScalar, "fps", ImGuiDataType_Double, ui.video.fps, &MIN_MAX_FPS, &MAX_MAX_FPS);
 			if (ImGui::TreeNode("encode")) {
 				// fps
-				int fps = ui.video.encode.fps.load(std::memory_order_acquire);
-				ImGui::SliderInt("fps", &fps, static_cast<int>(MIN_MAX_FPS), static_cast<int>(MAX_MAX_FPS));
-				ui.video.encode.fps.store(fps, std::memory_order_release);
+				COMP_ATOMIC(ImGui::SliderInt, "fps", ui.video.encode.fps, static_cast<int>(MIN_MAX_FPS), static_cast<int>(MAX_MAX_FPS));
 				// bitrate
-				int bitrate = ui.video.encode.bitrate.load(std::memory_order_acquire);
-				ImGui::SliderInt("bitrate", &bitrate, video::min_bitrate, video::max_bitrate);
-				ui.video.encode.bitrate.store(bitrate, std::memory_order_release);
-				ImGui::TreePop();
+				COMP_ATOMIC(ImGui::SliderInt, "bitrate", ui.video.encode.bitrate, video::min_bitrate, video::max_bitrate);
 				// width
-				int w = ui.video.encode.width.load(std::memory_order_acquire);
-				ImGui::SliderInt("width", &w, 400, 10000);
-				ui.video.encode.width.store(w, std::memory_order_release);
+				COMP_ATOMIC_EX(ImGui::SliderInt, "width", ui.video.encode.width, [](int v) {return v & ~1;}, static_cast<int>(sc_width * 0.1), sc_width);
 				// height
-				int h = ui.video.encode.height.load(std::memory_order_acquire);
-				ImGui::SliderInt("height", &h, 400, 10000);
-				ui.video.encode.height.store(h, std::memory_order_release);
+				COMP_ATOMIC_EX(ImGui::SliderInt, "height", ui.video.encode.height, [](int v) {return v & ~1;}, static_cast<int>(sc_height * 0.1), sc_height);
+				ImGui::TreePop();
 			}// encode
 			ImGui::TreePop();
 		}// vedio
 		if (ImGui::TreeNode("account")) {
+#			ifndef NDEBUG
+				ImGui::Text("id: %zu", (size_t)(get(logger.id)));
+				ImGui::Text("socket: %zu", (size_t)(client.Id()));
+#			endif
 			// room id
 			uint32_t const_room_id = logger.room_id;
+			uint32_t const_room_passwd = ui.account.room_passwd;
 			ImGui::InputScalar("room_id", ImGuiDataType_U32, &const_room_id);
+			if (isHost<true>()) {
+				ImGui::InputScalar("room_passwd", ImGuiDataType_U32, &const_room_passwd);
+			}
 			// rename
-			ImGui::InputText("##rename", rename, sizeof(rename), ImGuiInputTextFlags_CharsNoBlank);
+			ImGui::InputText("##rename", mid.rename, sizeof(mid.rename), ImGuiInputTextFlags_CharsNoBlank);
 			ImGui::SameLine();
 			if (ImGui::Button("rename")) {
 				{
 					std::lock_guard lock(logger.mtx_name);
-					logger.name = rename;
+					logger.name = mid.rename;
 				}
 				glfwSetWindowTitle(window->m_get, ("client: " + logger.name).c_str());
 			}
-			{
+			do {
 				std::lock_guard lock(mtx_users);
-				auto chosen = users.find(chosen_user.load(std::memory_order_acquire));
+				auto chosen = users.find(get(chosen_user));
 				assert(chosen != users.end());
-				auto name_chosen = users[chosen->first].name + (users[chosen->first].is_host.load(std::memory_order_acquire) ? "(host)" : "");
+				auto name_chosen = users[chosen->first].name + (get(users[chosen->first].is_host) ? "(host)" : "");
 				if (ImGui::BeginCombo("target", name_chosen.c_str())) {
 					for (const auto& user : users) {
-						auto name = user.second.name + (user.second.is_host.load(std::memory_order_acquire) ? "(host)" : "");
+						auto name = user.second.name + (get(user.second.is_host) ? "(host)" : "");
 						if (ImGui::Selectable(name.c_str())) {
-							chosen_user.store(user.first, std::memory_order_release);
-							println("chosen socket: " << user.first);
+							set(chosen_user, user.first);
+							println("chosen user_id: " << user.first);
 						}
 					}
 					ImGui::EndCombo();
 				}
-				if (isHost<false>() && ImGui::BeginCombo("kick_off", "invalid user")) {
+				if (!isHost<false>()) { break; }
+				ImGui::InputScalar("##set_room_passwd", ImGuiDataType_U32, &mid.room_passwd);
+				ImGui::SameLine();
+				if (ImGui::Button("reset_passwd")) {
+					set(ui.account.set_room_passwd, mid.room_passwd);
+					set(ui.account.room_passwd, mid.room_passwd);
+				}
+				if (ImGui::BeginCombo("kick_off", "invalid user")) {
 					(void)ImGui::Selectable("invalid user");
 					for (const auto& user : users) {
-						if (user.second.is_host.load(std::memory_order_acquire)) {
+						if (get(user.second.is_host)) {
 							continue;
 						}
 						if (ImGui::Selectable(user.second.name.c_str())) {
-							ui.account.wanna_kick_off.store(user.first, std::memory_order_release);
-							println("kick off socket: " << user.first);
+							set(ui.account.wanna_kick_off, user.first);
+							println("kick off user_id: " << user.first);
 						}
 					}
 					ImGui::EndCombo();
 				}
-			}
+			} while (false);
 			ImGui::TreePop();
 		}// account
 		if (ImGui::TreeNode("plugin")) {
@@ -644,6 +681,7 @@ void main(){
 		auto& data = frame.rgba;
 
 		if (data.size() != width * height * 4) {
+			system("pause");
 			return;
 		}
 
@@ -754,7 +792,7 @@ App::Page App::chooseMode() {
 }
 
 App::Page App::makeRoom() {
-	logger.room_id = Room::invalid_id;
+	logger.room_id = room::invalid_id;
 	logger.passwd = Room::invalid_passwd;
 	while (1) {
 		while (1) {
@@ -779,7 +817,7 @@ App::Page App::makeRoom() {
 }
 
 App::Page App::enterRoom() {
-	logger.room_id = Room::invalid_id;
+	logger.room_id = room::invalid_id;
 	logger.passwd = Room::invalid_passwd;
 	bool room_id_not_exist{ false };
 	bool passwd_wrong{ false };
@@ -790,7 +828,7 @@ App::Page App::enterRoom() {
 		ImGui::InputScalar("passwd", ImGuiDataType_U32, &p3.passwd);
 		ImGui::Text("both: 1~4294967295");
 		bool want_continue{ false };
-		if (p3.room_id == Room::invalid_id)		{ ImGui::Text("room_id format invalid"); want_continue = true; }
+		if (p3.room_id == room::invalid_id)		{ ImGui::Text("room_id format invalid"); want_continue = true; }
 		if (p3.passwd == Room::invalid_passwd)	{ ImGui::Text("passwd format invalid"); want_continue = true; }
 		if (want_continue) { continue; }
 		if (room_id_not_exist)	{ ImGui::Text("room id not exist"); } 
@@ -823,7 +861,7 @@ App::Page App::connectToServer() {
 		client = net::tcp::Client{ net::tcp::Ip::v4 };
 		loop {
 			PageRenderGuard pageRenderGuard{this, "connect to server", 20 };
-			ImGui::Text("your socket: %zu", static_cast<size_t>(client.Id()));
+			ImGui::Text("your tcp socket: %zu", static_cast<size_t>(client.Id()));
 			ImGui::InputText("target_ipv4", p1.ipv4, p1.buf_size);
 			ImGui::InputScalar("target_port", ImGuiDataType_U16, &p1.port);
 			ImGui::InputText("your_name", p1.name, p1.buf_size, ImGuiInputTextFlags_CharsNoBlank);
@@ -845,6 +883,10 @@ App::Page App::connectToServer() {
 		}
 	}
 	logger.name = p1.name;
+	net::socket_t get_id;
+	client.ReceiveBy(get_id);
+	set(logger.id, static_cast<user::id_t>(get_id));
+	println("id: " << logger.id);
 	println("socket: " << client.Id());
 	println("name: " << logger.name);
 	return Page::chooseMode;
@@ -855,7 +897,7 @@ void App::run() {
 	av_log_set_level(AV_LOG_ERROR); // ffmpeg log
 #endif//NDEBUG
 
-	while (!close_signal.load(std::memory_order_acquire)) {
+	while (!get(close_signal)) {
 		switch (page) {
 		case Page::connectToServer: page = connectToServer(); break;
 		case Page::chooseMode: page = chooseMode(); break;
@@ -933,6 +975,6 @@ App::~App() {
 }
 
 int main() {
-	std::unique_ptr<App> app = std::make_unique<App>();
+	auto app = std::make_unique<App>();
 	app->run();
 }

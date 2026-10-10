@@ -18,9 +18,24 @@
     <ClCompile Include="src\App.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="src\H264Decoder.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="src\H264Encoder.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\App.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="include\H264Decoder.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="include\H264Encoder.h">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="include\atomic_imgui.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>
