@@ -37,8 +37,9 @@ void Room::threadSendMsg(User* clientMtx) {
 		m_host_skt.store(m_client_sockets.empty() ? net::invalid_socket : m_client_sockets[0]->client.Id(), std::memory_order_release);
 	}
 
-	user::id_t save_id = user::invalid_id;
 	Client* client = &clientMtx->client;
+	const user::id_t save_id = this->makeId(*client);
+	println("connected to client user_id: " << save_id);
 
 	using Flag0 = uint8_t;
 	enum : Flag0 {
@@ -53,8 +54,10 @@ void Room::threadSendMsg(User* clientMtx) {
 		bool is_host_from_client{};
 		uint32_t set_passwd{ Room::invalid_passwd };
 		user::id_t wanna_kick_off{};
+		bool share_audio{};
 		std::vector<float> audio_frames{};
 		user::id_t choose_user{};
+		bool share_video{};
 		int32_t pk_size{};
 		std::vector<std::vector<uint8_t>> packets{};
 		void restore() {
@@ -62,7 +65,9 @@ void Room::threadSendMsg(User* clientMtx) {
 			is_host_from_client = false;
 			set_passwd = Room::invalid_passwd;
 			wanna_kick_off = user::invalid_id;
+			share_audio = false;
 			choose_user = user::invalid_id;
+			share_video = false;
 			pk_size = 0;
 		}
 	}rv;
@@ -71,6 +76,8 @@ void Room::threadSendMsg(User* clientMtx) {
 		
 		rv.restore();
 
+		int32_t packet_count{};
+
 		client->ReceiveBy(rv.id);
 		client->ReceiveBy(rv.name);
 		client->ReceiveBy(rv.is_host_from_client);
@@ -78,20 +85,26 @@ void Room::threadSendMsg(User* clientMtx) {
 			client->ReceiveBy(rv.set_passwd);
 			client->ReceiveBy(rv.wanna_kick_off);
 		}
-		client->ReceiveBy(rv.audio_frames);
+		client->ReceiveBy(rv.share_audio);
+		if (rv.share_audio) {
+			client->ReceiveBy(rv.audio_frames);
+		}
 		client->ReceiveBy(rv.choose_user);
-		client->ReceiveBy(rv.pk_size);
+		client->ReceiveBy(rv.share_video);
+		if (rv.share_video) {
+			if (client->ReceiveBy(rv.pk_size)) [[likely]] {
+				packet_count = rv.pk_size;
+				rv.packets.resize(std::max(rv.packets.size(), (size_t)packet_count));
+				for (int32_t i = 0;i < packet_count;++i) {
+					client->ReceiveBy(rv.packets[i]);
+				}
+			}
+		}
 
-		int32_t packet_count{};
 		//std::vector<std::vector<uint8_t>> packets;
 		if (!client->Closed()) {
 			if (rv.set_passwd != Room::invalid_passwd) {
 				this->setPasswd(rv.set_passwd);
-			}
-
-			if (save_id == user::invalid_id) { // since there always be at least one loop, this "=" will always be done
-				save_id = rv.id;
-				println("connected to client user_id: " << save_id);
 			}
 
 			if (!(flags & flag_clientChoiceRecorded) || (rv.choose_user != last_chosen_user)) {
@@ -103,11 +116,6 @@ void Room::threadSendMsg(User* clientMtx) {
 				flags |= flag_clientChoiceRecorded;
 			}
 
-			packet_count = client->Closed() ? 0 : rv.pk_size;
-			rv.packets.resize(std::max(rv.packets.size(), (size_t)packet_count));
-			for (int32_t i = 0;i < packet_count;++i) {
-				client->ReceiveBy(rv.packets[i]);
-			}
 		}
 		{
 			bool is_host_from_server = m_host_skt.load(std::memory_order_acquire) == client->Id();
@@ -143,13 +151,19 @@ void Room::threadSendMsg(User* clientMtx) {
 				if (rv.is_host_from_client) {
 					c->Send(is_host_from_server ? rv.wanna_kick_off : user::invalid_id);
 				}
-				c->Send(c->Id() == client->Id() ? std::vector<float>{} : rv.audio_frames);
+				c->Send(rv.share_audio);
+				if (rv.share_audio) {
+					c->Send(c->Id() == client->Id() ? std::vector<float>{} : rv.audio_frames);
+				}
 				if (choice_isnt_me) {
 					return;
 				}
-				c->Send(rv.pk_size);
-				for (int i = 0;i < packet_count;++i) {
-					c->Send(rv.packets[i]);
+				c->Send(rv.share_video);
+				if (rv.share_video) {
+					c->Send(rv.pk_size);
+					for (int i = 0;i < packet_count;++i) {
+						c->Send(rv.packets[i]);
+					}
 				}
 			});
 		}

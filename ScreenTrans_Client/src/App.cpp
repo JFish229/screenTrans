@@ -8,12 +8,13 @@
 #endif//NDEBUG
 
 #ifdef NDEBUG
-extern "C" {
+	extern "C" {
 #	include <libavutil/log.h>
-}
+	}
 #endif//NDEBUG
 
 #include <inttypes.h>
+
 #include <atomic_imgui.hpp>
 
 
@@ -94,7 +95,9 @@ void App::Receive() {
 		uint32_t room_passwd{};
 		bool is_host_from_client{};
 		user::id_t wanna_kick_off{};
+		bool share_audio{};
 		std::vector<float> audioFrames{};
+		bool share_video{};
 		int32_t pk_size{};
 		std::vector<uint8_t> pk{};
 		void restore() {
@@ -103,7 +106,9 @@ void App::Receive() {
 			is_host_from_server = false;
 			room_passwd = Room::invalid_passwd;
 			is_host_from_client = false;
+			share_audio = false;
 			wanna_kick_off = user::invalid_id;
+			share_video = false;
 			pk_size = 0;
 		}
 	} rv;
@@ -119,7 +124,7 @@ void App::Receive() {
 				std::lock_guard lock(mtx_users);
 				auto count = std::erase_if(users, [&](auto& user) { return user.first == rv.id;});
 			}
-			set(chosen_user, get(logger.id));
+			set(ui.room_user.chosen_user, get(logger.id));
 			continue;
 		}
 
@@ -128,14 +133,20 @@ void App::Receive() {
 		if (!recv_ok) [[unlikely]] { break; }
 		if (rv.is_host_from_server && get(logger.id) == rv.id) {
 			recv_ok &= client.ReceiveBy(rv.room_passwd);
-			set(ui.account.room_passwd, rv.room_passwd);
+			set(ui.room_user.room_passwd, rv.room_passwd);
 		}
 		recv_ok &= client.ReceiveBy(rv.is_host_from_client);
 		if (!recv_ok) [[unlikely]] { break; }
 		if (rv.is_host_from_client) {
 			recv_ok &= client.ReceiveBy(rv.wanna_kick_off);
 		}
-		recv_ok &= client.ReceiveBy(rv.audioFrames);
+		recv_ok &= client.ReceiveBy(rv.share_audio);
+		if (rv.share_audio) {
+			recv_ok &= client.ReceiveBy(rv.audioFrames);
+		}
+		else {
+			rv.audioFrames.resize(0);
+		}
 		if (!recv_ok) [[unlikely]] { break; }
 
 		if (rv.wanna_kick_off == get(logger.id)) {
@@ -152,33 +163,38 @@ void App::Receive() {
 		if (rv.signals & signal_choiceNotMatch) { continue; }
 
 		// each packet
-		if (!client.ReceiveBy(rv.pk_size)) [[unlikely]] { break; }
-		for (int i = 0;i < rv.pk_size;++i) {
-			if (!client.ReceiveBy(rv.pk)) [[unlikely]] { break; }
-			auto frames = decoder.DecodePacket(rv.pk);
-			if (!frames.empty()) {
-				std::lock_guard<std::mutex> lock(mtx_video_frames);
-				size_t current_size = total_video_frames.size();
-				size_t new_count = frames.size();
+		client.ReceiveBy(rv.share_video);
+		if (rv.share_video) {
+			if (!client.ReceiveBy(rv.pk_size)) [[unlikely]] { break; }
+			for (int i = 0;i < rv.pk_size;++i) {
+				if (!client.ReceiveBy(rv.pk)) [[unlikely]] { break; }
+				auto frames = decoder.DecodePacket(rv.pk);
+				if (!frames.empty()) {
+					std::lock_guard<std::mutex> lock(mtx_video_frames);
+					size_t current_size = total_video_frames.size();
+					size_t new_count = frames.size();
 
-				if (current_size + new_count > MAX_VIDEO_FRAMES) {
-					while (!total_video_frames.empty())
-						total_video_frames.pop();
+					if (current_size + new_count > MAX_VIDEO_FRAMES) {
+						while (!total_video_frames.empty())
+							total_video_frames.pop();
 
-					size_t keep = std::min(KEEP_FRAMES, new_count);
-					auto start = frames.end() - keep;
-					for (auto it = start; it != frames.end(); ++it) {
-						total_video_frames.push(std::move(*it));
+						size_t keep = std::min(KEEP_FRAMES, new_count);
+						auto start = frames.end() - keep;
+						for (auto it = start; it != frames.end(); ++it) {
+							total_video_frames.push(std::move(*it));
+						}
 					}
-				}
-				else {
-					for (auto& frame : frames) {
-						total_video_frames.push(std::move(frame));
+					else {
+						for (auto& frame : frames) {
+							total_video_frames.push(std::move(frame));
+						}
 					}
 				}
 			}
 		}
-
+		else {
+			total_video_frames.push({ 1,1,{0x33,0x33,0x33,0xFF} });
+		}
 	}
 }
 
@@ -203,8 +219,18 @@ void App::Send() {
 	audio::Capture ad_cpt{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, audio::bufSec };
 	ad_cpt.Start();
 
+	std::vector<float> buf_audio{};
+
 	auto last_time = std::chrono::steady_clock::now();
 	while(!p_show.ended() && !clientClosed()){
+		if (!capture.CaptureFrame()) {
+			continue;
+		}
+		auto& rgba = capture.GetBuffer();
+		if (rgba.empty()) {
+			continue;
+		}
+
 		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
 			std::chrono::duration<double>(1.0 / get(ui.send.fps))
 		);
@@ -212,22 +238,18 @@ void App::Send() {
 		std::this_thread::sleep_until(next_frame);
 		last_time = next_frame;
 
-		if (!capture.CaptureFrame()) {
-			continue;
-		}
-		auto& rgba = capture.GetBuffer();
-
-		if (rgba.empty()) {
-			continue;
-		}
+		bool share_audio = get(ui.send.share_audio);
+		bool share_video = get(ui.send.share_video);
 
 		std::vector<std::vector<uint8_t>> packets;
 		{
 			std::lock_guard lock(ui.video.encode.mtx);
-			const bool resetOK = encoder.Reset(w, h, ui.video.encode.width, ui.video.encode.height, ui.video.encode.fps, ui.video.encode.bitrate);
+			encoder.Reset(w, h, ui.video.encode.width, ui.video.encode.height, ui.video.encode.fps, ui.video.encode.bitrate);
 			set(ui.video.encode.width, encoder.Width());
 			set(ui.video.encode.height, encoder.Height());
-			packets = encoder.EncodeFrame(rgba);
+			if (share_video) {
+				packets = encoder.EncodeFrame(rgba);
+			}
 		}
 		int32_t pk_size = static_cast<int32_t>(packets.size());
 
@@ -240,18 +262,23 @@ void App::Send() {
 		}
 		client.Send(is_host_from_client);
 		if (is_host_from_client) {
-			client.Send(get(ui.account.set_room_passwd));
-			set(ui.account.set_room_passwd, Room::invalid_passwd);
-			client.Send(get(ui.account.wanna_kick_off));
-			set(ui.account.wanna_kick_off, user::invalid_id);
+			client.Send(get(ui.room_user.set_room_passwd));
+			set(ui.room_user.set_room_passwd, Room::invalid_passwd);
+			client.Send(get(ui.room_user.wanna_kick_off));
+			set(ui.room_user.wanna_kick_off, user::invalid_id);
 		}
-		client.Send(ad_cpt.Frames());//move
-		client.Send(get(chosen_user));
-		client.Send(pk_size);
-		for (auto& pk : packets) {
-			client.Send(pk);
+		client.Send(share_audio);
+		if (share_audio) {
+			client.Send(std::move(ad_cpt.giveFrames(buf_audio)));//move
 		}
-
+		client.Send(get(ui.room_user.chosen_user));
+		client.Send(share_video);
+		if (share_video) {
+			client.Send(pk_size);
+			for (auto& pk : packets) {
+				client.Send(pk);
+			}
+		}
 	}
 }
 
@@ -406,10 +433,10 @@ void App::restoreAfterShow() {
 
 App::Page App::Show() {
 
-	set(chosen_user, get(logger.id));
+	set(ui.room_user.chosen_user, get(logger.id));
 	{
 		std::lock_guard lock2{ mtx_users };
-		auto [itr, first] = users.try_emplace(get(chosen_user));
+		auto [itr, first] = users.try_emplace(get(ui.room_user.chosen_user));
 		itr->second.name = logger.name;
 	}
 
@@ -568,14 +595,14 @@ void main(){
 			}// encode
 			ImGui::TreePop();
 		}// vedio
-		if (ImGui::TreeNode("account")) {
+		if (ImGui::TreeNode("room_user")) {
 #			ifndef NDEBUG
 				ImGui::Text("id: %zu", (size_t)(get(logger.id)));
 				ImGui::Text("socket: %zu", (size_t)(client.Id()));
 #			endif
 			// room id
 			uint32_t const_room_id = logger.room_id;
-			uint32_t const_room_passwd = ui.account.room_passwd;
+			uint32_t const_room_passwd = ui.room_user.room_passwd;
 			ImGui::InputScalar("room_id", ImGuiDataType_U32, &const_room_id);
 			if (isHost<true>()) {
 				ImGui::InputScalar("room_passwd", ImGuiDataType_U32, &const_room_passwd);
@@ -590,27 +617,34 @@ void main(){
 				}
 				glfwSetWindowTitle(window->m_get, ("client: " + logger.name).c_str());
 			}
+			// share_video
+			COMP_ATOMIC(ImGui::Checkbox, "share_video", ui.send.share_video);
+			// share_audio
+			COMP_ATOMIC(ImGui::Checkbox, "share_audio", ui.send.share_audio);
 			do {
 				std::lock_guard lock(mtx_users);
-				auto chosen = users.find(get(chosen_user));
+				auto chosen = users.find(get(ui.room_user.chosen_user));
 				assert(chosen != users.end());
 				auto name_chosen = users[chosen->first].name + (get(users[chosen->first].is_host) ? "(host)" : "");
 				if (ImGui::BeginCombo("target", name_chosen.c_str())) {
-					for (const auto& user : users) {
-						auto name = user.second.name + (get(user.second.is_host) ? "(host)" : "");
-						if (ImGui::Selectable(name.c_str())) {
-							set(chosen_user, user.first);
+					for (auto& user : users) {
+						const size_t orig_len = user.second.name.size();
+						user.second.name += (get(user.second.is_host) ? "(host)" : "");
+						if (ImGui::Selectable(user.second.name.c_str())) {
+							set(ui.room_user.chosen_user, user.first);
 							println("chosen user_id: " << user.first);
 						}
+						user.second.name.resize(orig_len);
 					}
 					ImGui::EndCombo();
 				}
 				if (!isHost<false>()) { break; }
+				ImGui::Text("host_privilege: ");
 				ImGui::InputScalar("##set_room_passwd", ImGuiDataType_U32, &mid.room_passwd);
 				ImGui::SameLine();
 				if (ImGui::Button("reset_passwd")) {
-					set(ui.account.set_room_passwd, mid.room_passwd);
-					set(ui.account.room_passwd, mid.room_passwd);
+					set(ui.room_user.set_room_passwd, mid.room_passwd);
+					set(ui.room_user.room_passwd, mid.room_passwd);
 				}
 				if (ImGui::BeginCombo("kick_off", "invalid user")) {
 					(void)ImGui::Selectable("invalid user");
@@ -619,7 +653,7 @@ void main(){
 							continue;
 						}
 						if (ImGui::Selectable(user.second.name.c_str())) {
-							set(ui.account.wanna_kick_off, user.first);
+							set(ui.room_user.wanna_kick_off, user.first);
 							println("kick off user_id: " << user.first);
 						}
 					}
@@ -627,7 +661,7 @@ void main(){
 				}
 			} while (false);
 			ImGui::TreePop();
-		}// account
+		}// room_user
 		if (ImGui::TreeNode("plugin")) {
 			ImGui::BeginChild("##speech", ImVec2(-FLT_MIN, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
 			ImGui::PushTextWrapPos(0.0f);   // 0 表示按窗口右边界换行
@@ -939,8 +973,8 @@ App::App() {
 	fontConfig.OversampleV = 2;
 
 	//io.Fonts->Clear();
-	io->Fonts->AddFontFromFileTTF("font/MapleMonoNL-CN-Regular.ttf", 15.0f, &fontConfig, io->Fonts->GetGlyphRangesChineseFull());
-	//io->Fonts->AddFontFromFileTTF("C:/Windows/Fonts/msyh.ttc", 15.0f, &fontConfig, io->Fonts->GetGlyphRangesChineseFull());
+	//io->Fonts->AddFontFromFileTTF("font/MapleMonoNL-CN-Regular.ttf", 15.0f, &fontConfig, io->Fonts->GetGlyphRangesChineseFull());
+	io->Fonts->AddFontFromFileTTF("C:/Windows/Fonts/msyh.ttc", 15.0f, &fontConfig, io->Fonts->GetGlyphRangesChineseFull());
 	//io.Fonts->Build();
 	//io.Fonts->AddFontFromFileTTF("font/msyh.ttc", 15.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
 

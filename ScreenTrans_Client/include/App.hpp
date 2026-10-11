@@ -106,7 +106,8 @@ struct Defer {
 class App {
 private:
 	static std::unique_ptr<gl::Window> makeWindow();
-	template<bool lock>
+private:
+	template<bool lock_users>
 	[[nodiscard]] bool isHost();
 	[[nodiscard]] bool clientClosed();
 private:
@@ -220,7 +221,6 @@ private:
 
 	std::queue<ST::DecodedFrame> total_video_frames;
 	std::atomic<bool> close_signal = false;
-	std::atomic<user::id_t> chosen_user; // init with self
 	struct User {
 		std::atomic<bool> is_host{ false };
 		std::string name;
@@ -252,12 +252,13 @@ private:
 				std::counting_semaphore<> wait_wh{0};
 			} encode;
 		} video;
-		struct {
+		struct RoomUser{
 			std::atomic<bool> is_kicked_off{ false };
+			std::atomic<user::id_t> chosen_user; // init with self
 			std::atomic<user::id_t> wanna_kick_off{ user::invalid_id };
 			std::atomic<uint32_t> room_passwd{ Room::invalid_passwd };
 			std::atomic<uint32_t> set_room_passwd{ Room::invalid_passwd };
-		} account;
+		} room_user;
 	} ui;
 
 	void* any_usage{nullptr}; // now only for renderFunc in draw function
