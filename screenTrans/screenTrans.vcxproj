@@ -106,7 +106,7 @@
       <EnableModules>true</EnableModules>
       <BuildStlModules>false</BuildStlModules>
       <AdditionalIncludeDirectories>$(WindowsSDK_IncludePath);thirdparty/include/miniaudio;thirdparty/include/ffmpeg_x264;include;thirdparty/include;thirdparty/include/imgui;thirdparty/include/gl;thirdparty/include/glad;thirdparty/include/boost</AdditionalIncludeDirectories>
-      <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>

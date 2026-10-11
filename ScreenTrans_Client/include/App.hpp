@@ -44,6 +44,7 @@
 using std::literals::chrono_literals::operator""ms;
 
 #include <boost/lockfree/spsc_queue.hpp>
+#include <boost/cstdfloat.hpp>
 
 #include <gl/Window.h>
 #include <gl/Shader.h>
@@ -53,6 +54,8 @@ using std::literals::chrono_literals::operator""ms;
 #include <gl/Render.h>
 #include <gl/Texture.h>
 #include <gl/util.h>
+
+#include <compile_time.hpp>
 
 #ifndef NDEBUG
 #	define print(x) std::cout<< x
@@ -72,8 +75,8 @@ using ST::H264Encoder, ST::H264Decoder, ST::ScreenCapture;
 inline constexpr int SLEEP_TIME = 0;
 inline constexpr size_t MAX_VIDEO_FRAMES = 10;
 inline constexpr size_t KEEP_FRAMES = 4;
-inline constexpr double MAX_MAX_FPS = 150.0;
-inline constexpr double MIN_MAX_FPS = 5.0;
+inline constexpr boost::float64_t MAX_MAX_FPS = 150.0;
+inline constexpr boost::float64_t MIN_MAX_FPS = 5.0;
 namespace video {
 	inline constexpr int min_bitrate = 2'000'000;
 	inline constexpr int max_bitrate = 20'000'000;
@@ -84,7 +87,7 @@ namespace audio {
 	inline constexpr uint32_t channels = 1;
 	inline constexpr uint32_t periodSizeInFrames = 1000;
 	static_assert(sampleRate% periodSizeInFrames == 0);
-	inline constexpr double periodSec = static_cast<double>(periodSizeInFrames) / sampleRate;
+	inline constexpr boost::float64_t periodSec = static_cast<boost::float64_t>(periodSizeInFrames) / sampleRate;
 	inline constexpr int mixPeriods = 5;
 	inline constexpr int bufSec = 1;
 }
@@ -118,6 +121,8 @@ private:
 	void audioMix();
 	void asrRecv();
 private:
+	void storeUiState();
+	void loadUiState();
 	void pageRenderBegin(const char* title, int sleepTime);
 	void pageRenderEnd();
 	struct PageRenderGuard {
@@ -132,29 +137,27 @@ private:
 		makeRoom,
 		enterRoom,
 		Show,
-		//serverStatusError,
 		Tmp,
 		//count,
 	};
 	struct P1 {
-		static inline constexpr size_t buf_size = 256;
-		char ipv4[buf_size]{};
 		static inline constexpr uint16_t invalid_port{ 0 };
-		uint16_t port{ invalid_port };
-		char name[buf_size]{};
+		ALIGN(char) ipv4[64]{};
+		ALIGN(uint16_t) port{ invalid_port };
+		ALIGN(char) name[128]{};
 	}p1;
 	Page connectToServer();
 
 	Page chooseMode();
 
 	struct P2 {
-		uint32_t passwd{ Room::invalid_passwd };
+		ALIGN(uint32_t) passwd{ Room::invalid_passwd };
 	}p2;
 	Page makeRoom();
 
 	struct P3 {
-		uint32_t room_id{ room::invalid_id };
-		uint32_t passwd{ Room::invalid_passwd };
+		ALIGN(uint32_t) room_id{ room::invalid_id };
+		ALIGN(uint32_t) passwd{ Room::invalid_passwd };
 	}p3;
 	Page enterRoom();
 
@@ -165,6 +168,7 @@ private:
 		enum class End {
 			clientClosed = 0,
 			kickOff,
+			Return,
 			Default = clientClosed,
 		};
 		ShowPara() { restore(); }
@@ -235,14 +239,45 @@ private:
 	audio::Player audioPlayer{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, &audioUser, audio::User::callback };
 	net::tcp::Client client{ net::tcp::Ip::v4 };
 
+	using bool_8 = std::conditional_t<sizeof(bool) == 1, bool, uint8_t>;
+
+	struct Ui {
+		P1 p1;
+		P2 p2;
+		P3 p3;
+		struct {
+			ALIGN(bool_8) share_audio{};
+			ALIGN(bool_8) share_video {};
+			ALIGN(boost::float64_t) fps{20};
+		} send;
+		struct {
+			ALIGN(boost::float64_t) fps{100};
+			struct {
+				ALIGN(int32_t) fps{};
+				ALIGN(int32_t) bitrate{};
+				ALIGN(int32_t) width{};
+				ALIGN(int32_t) height{};
+			} encode;
+		} video;
+		struct RoomUser {
+			ALIGN(bool) is_kicked_off{};
+			ALIGN(uint64_t) chosen_user {}; // init with self
+			struct {
+				ALIGN(uint64_t) wanna_kick_off{};
+				ALIGN(uint32_t) room_passwd{};
+				ALIGN(uint32_t) set_room_passwd{};
+			} host;
+		} room_user;
+	};
+
 	struct {
 		struct {
 			std::atomic<bool> share_audio{ false };
 			std::atomic<bool> share_video{ false };
-			std::atomic<double> fps = 20;
+			std::atomic<boost::float64_t> fps = 20;
 		} send;
 		struct {
-			std::atomic<double> fps = 100;
+			std::atomic<boost::float64_t> fps = 100;
 			struct {
 				std::mutex mtx;
 				std::atomic<int> fps = 30;
@@ -255,9 +290,11 @@ private:
 		struct RoomUser{
 			std::atomic<bool> is_kicked_off{ false };
 			std::atomic<user::id_t> chosen_user; // init with self
-			std::atomic<user::id_t> wanna_kick_off{ user::invalid_id };
-			std::atomic<uint32_t> room_passwd{ Room::invalid_passwd };
-			std::atomic<uint32_t> set_room_passwd{ Room::invalid_passwd };
+			struct {
+				std::atomic<user::id_t> wanna_kick_off{ user::invalid_id };
+				std::atomic<uint32_t> room_passwd{ Room::invalid_passwd };
+				std::atomic<uint32_t> set_room_passwd{ Room::invalid_passwd };
+			} host;
 		} room_user;
 	} ui;
 

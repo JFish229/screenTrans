@@ -14,9 +14,19 @@
 #endif//NDEBUG
 
 #include <inttypes.h>
+#include <cstdlib>
 
 #include <atomic_imgui.hpp>
 
+#if defined(_WIN32)
+#   define FONT_CJK_PATH "C:/Windows/Fonts/msyh.ttc"          // 微软雅黑
+#elif defined(__APPLE__)
+#   define FONT_CJK_PATH "/System/Library/Fonts/PingFang.ttc" // 苹方
+#elif defined(__linux__)
+#   define FONT_CJK_PATH "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+#else
+#   define FONT_CJK_PATH ""   // 未知平台
+#endif
 
 #if USE_IMGUI
 namespace ImGui {
@@ -60,6 +70,72 @@ std::unique_ptr<gl::Window> App::makeWindow() {
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 	return res;
+}
+
+void App::storeUiState() {
+	std::FILE* const file = std::fopen("FlexMeet.ini", "wb");
+	DEFER([file]() { std::fclose(file); });
+	assert(file);
+	Ui buf_ui;
+
+	constexpr int BEGIN = __LINE__ + 1;
+	memcpy(buf_ui.p1.ipv4, p1.ipv4, sizeof(p1.ipv4));//
+	buf_ui.p1.port = p1.port;
+	memcpy(buf_ui.p1.name, p1.name, sizeof(p1.ipv4));
+	buf_ui.p2.passwd = p2.passwd;//
+	buf_ui.p3.room_id = p3.room_id;//
+	buf_ui.p3.passwd = p3.passwd;//
+	buf_ui.send.fps = ui.send.fps;//
+	buf_ui.send.share_audio = ui.send.share_audio;
+	buf_ui.send.share_video = ui.send.share_video;
+	buf_ui.video.fps = ui.video.fps;//
+	buf_ui.video.encode.fps = ui.video.encode.fps;
+	buf_ui.video.encode.bitrate = ui.video.encode.bitrate;
+	buf_ui.video.encode.width = ui.video.encode.width;
+	buf_ui.video.encode.height = ui.video.encode.height;
+	buf_ui.room_user.is_kicked_off = ui.room_user.is_kicked_off;//
+	buf_ui.room_user.chosen_user = static_cast<user::id_t>(get(ui.room_user.chosen_user));
+	buf_ui.room_user.host.wanna_kick_off = static_cast<user::id_t>(get(ui.room_user.host.wanna_kick_off));
+	buf_ui.room_user.host.room_passwd = ui.room_user.host.room_passwd;
+	buf_ui.room_user.host.set_room_passwd = ui.room_user.host.set_room_passwd;
+	constexpr int END = __LINE__;
+	static_assert(END - BEGIN == count_basic_members<Ui>());
+
+	std::fwrite(&buf_ui, sizeof(buf_ui), 1, file);
+}
+
+void App::loadUiState() {
+	std::FILE* const file = std::fopen("FlexMeet.ini", "rb");
+	DEFER([file]() { if (file) { std::fclose(file); }});
+	if (!file) { return; }
+	std::fseek(file, 0, SEEK_END);
+	const auto file_size = std::ftell(file);
+	if (file_size != sizeof(Ui)) { return; }
+	std::rewind(file);
+	Ui buf_ui;
+	fread(&buf_ui, sizeof(Ui), 1, file);
+	constexpr int BEGIN = __LINE__ + 1;
+	memcpy(p1.ipv4, buf_ui.p1.ipv4, sizeof(p1.ipv4));//
+	p1.port = buf_ui.p1.port;
+	memcpy(p1.name, buf_ui.p1.name, sizeof(p1.ipv4));
+	p2.passwd = buf_ui.p2.passwd;//
+	p3.room_id = buf_ui.p3.room_id;//
+	p3.passwd = buf_ui.p3.passwd;//
+	ui.send.fps = buf_ui.send.fps;//
+	ui.send.share_audio = buf_ui.send.share_audio;
+	ui.send.share_video = buf_ui.send.share_video;
+	ui.video.fps = buf_ui.video.fps;//
+	ui.video.encode.fps = buf_ui.video.encode.fps;
+	ui.video.encode.bitrate = buf_ui.video.encode.bitrate;
+	ui.video.encode.width = buf_ui.video.encode.width;
+	ui.video.encode.height = buf_ui.video.encode.height;
+	ui.room_user.is_kicked_off = buf_ui.room_user.is_kicked_off;//
+	ui.room_user.chosen_user = buf_ui.room_user.chosen_user;
+	ui.room_user.host.wanna_kick_off = buf_ui.room_user.host.wanna_kick_off;
+	ui.room_user.host.room_passwd = buf_ui.room_user.host.room_passwd;
+	ui.room_user.host.set_room_passwd = buf_ui.room_user.host.set_room_passwd;
+	constexpr int END = __LINE__;
+	static_assert(END - BEGIN == count_basic_members<Ui>());
 }
 
 template<bool lock_users>
@@ -133,7 +209,7 @@ void App::Receive() {
 		if (!recv_ok) [[unlikely]] { break; }
 		if (rv.is_host_from_server && get(logger.id) == rv.id) {
 			recv_ok &= client.ReceiveBy(rv.room_passwd);
-			set(ui.room_user.room_passwd, rv.room_passwd);
+			set(ui.room_user.host.room_passwd, rv.room_passwd);
 		}
 		recv_ok &= client.ReceiveBy(rv.is_host_from_client);
 		if (!recv_ok) [[unlikely]] { break; }
@@ -193,7 +269,7 @@ void App::Receive() {
 			}
 		}
 		else {
-			total_video_frames.push({ 1,1,{0x33,0x33,0x33,0xFF} });
+			total_video_frames.push({ 1,1,{0x33,0x33,0x33,0x00} });
 		}
 	}
 }
@@ -232,7 +308,7 @@ void App::Send() {
 		}
 
 		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-			std::chrono::duration<double>(1.0 / get(ui.send.fps))
+			std::chrono::duration<boost::float64_t>(1.0 / get(ui.send.fps))
 		);
 		auto next_frame = last_time + target_interval;
 		std::this_thread::sleep_until(next_frame);
@@ -262,10 +338,10 @@ void App::Send() {
 		}
 		client.Send(is_host_from_client);
 		if (is_host_from_client) {
-			client.Send(get(ui.room_user.set_room_passwd));
-			set(ui.room_user.set_room_passwd, Room::invalid_passwd);
-			client.Send(get(ui.room_user.wanna_kick_off));
-			set(ui.room_user.wanna_kick_off, user::invalid_id);
+			client.Send(get(ui.room_user.host.set_room_passwd));
+			set(ui.room_user.host.set_room_passwd, Room::invalid_passwd);
+			client.Send(get(ui.room_user.host.wanna_kick_off));
+			set(ui.room_user.host.wanna_kick_off, user::invalid_id);
 		}
 		client.Send(share_audio);
 		if (share_audio) {
@@ -390,7 +466,7 @@ void App::asrRecv()
 
 		int out_bytes = 0;
 
-		// println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<double>( audioBuf.size() ) / 16000.0 );
+		// println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<boost::float64_t>( audioBuf.size() ) / 16000.0 );
 
 		const char* str = plug.asr.transcribe( audioBuf.data(), static_cast<int>( audioBuf.size() ), &out_bytes );
 		/*
@@ -490,7 +566,7 @@ void main(){
 	gl::Shader shader{ vs, fs };
 	shader.use();
 	shader.setUniform("sampler", 0);
-	gl::Texture2D img(1, 1, { 0xFF,0x77,0x44,0xFF }, gl::GpuTextureFmt::RGBA8, gl::TextureFmt::BGRA, 4);
+	gl::Texture2D img(1, 1, { 0x33,0x33,0x33,0xFF }, gl::GpuTextureFmt::RGBA8, gl::TextureFmt::BGRA, 4);
 	img.bindTo(0);
 	gl::VertexBufferLayout layoutImg;
 	layoutImg.push<float>(3);
@@ -522,7 +598,7 @@ void main(){
 		const_cast<int&>(sc_height) = mode->height;
 	}
 
-	double d_time = 0;
+	boost::float64_t d_time = 0;
 	float fps = 0;
 	bool show_settings = true;
 	struct {
@@ -533,7 +609,7 @@ void main(){
 	auto last_time = std::chrono::steady_clock::now();
 	auto renderDealing = [&]() {
 		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-			std::chrono::duration<double>(1.0 / get(ui.video.fps))
+			std::chrono::duration<boost::float64_t>(1.0 / get(ui.video.fps))
 		);
 		auto next_frame = last_time + target_interval;
 		std::this_thread::sleep_until(next_frame);
@@ -565,6 +641,9 @@ void main(){
 
 	if (show_settings) {
 		ImGui::Begin((char*)u8"settings");
+		if (ImGui::Button("<-")) {
+			p_show.setEnd(true, ShowPara::End::Return);
+		}
 		if (ImGui::TreeNode("send")) {
 			// share_video
 			COMP_ATOMIC(ImGui::Checkbox, "share_video", ui.send.share_video);
@@ -602,11 +681,9 @@ void main(){
 #			endif
 			// room id
 			uint32_t const_room_id = logger.room_id;
-			uint32_t const_room_passwd = ui.room_user.room_passwd;
 			ImGui::InputScalar("room_id", ImGuiDataType_U32, &const_room_id);
-			if (isHost<true>()) {
-				ImGui::InputScalar("room_passwd", ImGuiDataType_U32, &const_room_passwd);
-			}
+			// name
+			ImGui::Text("name: %s", logger.name.c_str());
 			// rename
 			ImGui::InputText("##rename", mid.rename, sizeof(mid.rename), ImGuiInputTextFlags_CharsNoBlank);
 			ImGui::SameLine();
@@ -621,7 +698,7 @@ void main(){
 			COMP_ATOMIC(ImGui::Checkbox, "share_video", ui.send.share_video);
 			// share_audio
 			COMP_ATOMIC(ImGui::Checkbox, "share_audio", ui.send.share_audio);
-			do {
+			{
 				std::lock_guard lock(mtx_users);
 				auto chosen = users.find(get(ui.room_user.chosen_user));
 				assert(chosen != users.end());
@@ -638,30 +715,38 @@ void main(){
 					}
 					ImGui::EndCombo();
 				}
-				if (!isHost<false>()) { break; }
-				ImGui::Text("host_privilege: ");
+			}
+			if (isHost<true>() && ImGui::TreeNode("host")) {
+				uint32_t const_room_passwd = get(ui.room_user.host.room_passwd);
+				ImGui::InputScalar("room_passwd", ImGuiDataType_U32, &const_room_passwd);
 				ImGui::InputScalar("##set_room_passwd", ImGuiDataType_U32, &mid.room_passwd);
 				ImGui::SameLine();
 				if (ImGui::Button("reset_passwd")) {
-					set(ui.room_user.set_room_passwd, mid.room_passwd);
-					set(ui.room_user.room_passwd, mid.room_passwd);
+					set(ui.room_user.host.set_room_passwd, mid.room_passwd);
+					set(ui.room_user.host.room_passwd, mid.room_passwd);
 				}
 				if (ImGui::BeginCombo("kick_off", "invalid user")) {
 					(void)ImGui::Selectable("invalid user");
-					for (const auto& user : users) {
-						if (get(user.second.is_host)) {
-							continue;
-						}
-						if (ImGui::Selectable(user.second.name.c_str())) {
-							set(ui.room_user.wanna_kick_off, user.first);
-							println("kick off user_id: " << user.first);
+					{
+						std::lock_guard lock(mtx_users);
+						for (const auto& user : users) {
+							if (get(user.second.is_host)) {
+								continue;
+							}
+							if (ImGui::Selectable(user.second.name.c_str())) {
+								set(ui.room_user.host.wanna_kick_off, user.first);
+								println("kick off user_id: " << user.first);
+							}
 						}
 					}
 					ImGui::EndCombo();
 				}
-			} while (false);
+				ImGui::TreePop();
+			}// host
+
 			ImGui::TreePop();
 		}// room_user
+
 		if (ImGui::TreeNode("plugin")) {
 			ImGui::BeginChild("##speech", ImVec2(-FLT_MIN, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
 			ImGui::PushTextWrapPos(0.0f);   // 0 表示按窗口右边界换行
@@ -673,6 +758,7 @@ void main(){
 			ImGui::EndChild();
 			ImGui::TreePop();
 		}// plugin
+
 		ImGui::End();
 	}// settings
 
@@ -689,7 +775,15 @@ void main(){
 		// Rendering
 		ImGui::Render();
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-		d_time += 1 / (double)ImGui::GetIO().Framerate;
+		//if (io->ConfigFlags & ImGuiConfigFlags_ViewportsEnable) [[likely]] {
+		//	GLFWwindow* backup = glfwGetCurrentContext();
+		//	ImGui::UpdatePlatformWindows();
+		//	ImGui::RenderPlatformWindowsDefault();
+		//	glfwMakeContextCurrent(backup);   // 恢复主上下文
+		//}
+
+
+		d_time += 1 / (boost::float64_t)ImGui::GetIO().Framerate;
 #endif
 
 		std::this_thread::sleep_for(std::chrono::milliseconds(SLEEP_TIME));
@@ -739,7 +833,11 @@ void main(){
 		renderDealing();
 		});
 	while (!p_show.ended() && !clientClosed()) {
-		if (window->shouldClose()) { exit(1); }
+		if (window->shouldClose()) [[unlikely]] { 
+			p_show.setEnd(true, ShowPara::End::Default); 
+			set(close_signal, true);  
+			return Page::Tmp; 
+		}
 		glfwPollEvents();
 		renderDealing();
 	}
@@ -754,6 +852,10 @@ void main(){
 		println("enter kickOff");
 		return makeTmp("kickOff", "you are kicked off by the room host.", Page::connectToServer);
 		break;
+	case ShowPara::End::Return:
+		println("enter Return");
+		return Page::connectToServer;
+		break;
 	default:
 		assert(false);
 	}
@@ -761,7 +863,8 @@ void main(){
 }
 
 App::Page App::Tmp() {
-	while (1) {
+	for (;;) {
+		if (window->shouldClose()) { set(close_signal, true); return Page::Tmp; }
 		PageRenderGuard pageRenderGuard{ this, p_tmp.title.c_str(), 20};
 		ImGui::Text(p_tmp.content.c_str());
 		if (ImGui::Button("<-")) { break; }
@@ -778,7 +881,6 @@ App::Page App::makeTmp(const std::string& title, std::string content, Page back)
 
 void App::pageRenderBegin(const char* title, int sleepTime) {
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleepTime));
-	if (window->shouldClose()) { exit(1); }
 	glfwPollEvents();
 #if USE_IMGUI
 	// Start the Dear ImGui frame
@@ -803,12 +905,20 @@ void App::pageRenderEnd() {
 	// Rendering
 	ImGui::Render();
 	ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+	//if (io->ConfigFlags & ImGuiConfigFlags_ViewportsEnable) [[likely]] {
+	//	GLFWwindow* backup = glfwGetCurrentContext();
+	//	ImGui::UpdatePlatformWindows();
+	//	ImGui::RenderPlatformWindowsDefault();
+	//	glfwMakeContextCurrent(backup);   // 恢复主上下文
+	//}
 #endif	
 	window->swapBuffers();
 }
 
 App::Page App::chooseMode() {
-	while(1) {
+	for (;;) {
+		if (window->shouldClose()) { set(close_signal, true); return Page::Tmp; }
 		PageRenderGuard pageRenderGuard{ this, "choose mode", 20 };
 		if (ImGui::Button("<-")) { client.Send(true); return Page::connectToServer; }
 		if (ImGui::Button("enter a room")) {
@@ -830,6 +940,7 @@ App::Page App::makeRoom() {
 	logger.passwd = Room::invalid_passwd;
 	while (1) {
 		while (1) {
+			if (window->shouldClose()) { set(close_signal, true); return Page::Tmp; }
 			PageRenderGuard PageRenderGuard{ this, "passwd", 20 };
 			if (ImGui::Button("<-")) { client.Send(true); return Page::chooseMode; }
 			ImGui::InputScalar("passwd", ImGuiDataType_U32, &p2.passwd);
@@ -856,6 +967,7 @@ App::Page App::enterRoom() {
 	bool room_id_not_exist{ false };
 	bool passwd_wrong{ false };
 	for (;;) {
+		if (window->shouldClose()) { set(close_signal, true); return Page::Tmp; }
 		PageRenderGuard pageRenderGuard(this, "enter room", 20);
 		if (ImGui::Button("<-")) { client.Send(true); return Page::chooseMode; }
 		ImGui::InputScalar("room_id", ImGuiDataType_U32, &p3.room_id);
@@ -894,11 +1006,12 @@ App::Page App::connectToServer() {
 	loop {
 		client = net::tcp::Client{ net::tcp::Ip::v4 };
 		loop {
+			if (window->shouldClose()) { set(close_signal, true); return Page::Tmp; }
 			PageRenderGuard pageRenderGuard{this, "connect to server", 20 };
 			ImGui::Text("your tcp socket: %zu", static_cast<size_t>(client.Id()));
-			ImGui::InputText("target_ipv4", p1.ipv4, p1.buf_size);
+			ImGui::InputText("target_ipv4", p1.ipv4, sizeof(p1.ipv4));
 			ImGui::InputScalar("target_port", ImGuiDataType_U16, &p1.port);
-			ImGui::InputText("your_name", p1.name, p1.buf_size, ImGuiInputTextFlags_CharsNoBlank);
+			ImGui::InputText("your_name", p1.name, sizeof(p1.name), ImGuiInputTextFlags_CharsNoBlank);
 			bool ok{ true };
 			if (!first)						{ ImGui::Text("connect failed"); } 
 			if (strlen(p1.name) == 0)		{ ImGui::Text("name should not be blank"); ok = false; }
@@ -938,7 +1051,6 @@ void App::run() {
 		case Page::makeRoom: page = makeRoom(); break;
 		case Page::enterRoom: page = enterRoom(); break;
 		case Page::Show: page = Show(); break;
-		//case Page::serverStatusError: page = serverStatusError(); break;
 		case Page::Tmp: page = Tmp(); break;
 		}
 	}
@@ -974,7 +1086,7 @@ App::App() {
 
 	//io.Fonts->Clear();
 	//io->Fonts->AddFontFromFileTTF("font/MapleMonoNL-CN-Regular.ttf", 15.0f, &fontConfig, io->Fonts->GetGlyphRangesChineseFull());
-	io->Fonts->AddFontFromFileTTF("C:/Windows/Fonts/msyh.ttc", 15.0f, &fontConfig, io->Fonts->GetGlyphRangesChineseFull());
+	io->Fonts->AddFontFromFileTTF(FONT_CJK_PATH, 15.0f, &fontConfig, io->Fonts->GetGlyphRangesChineseFull());
 	//io.Fonts->Build();
 	//io.Fonts->AddFontFromFileTTF("font/msyh.ttc", 15.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
 
@@ -983,18 +1095,25 @@ App::App() {
 	ImGui_ImplOpenGL3_Init("#version 330");
 #endif
 
-	assert(plug.asr.loader.load("plugin/plugin_ASR.dll"));
+	bool ret{};
+	ret = plug.asr.loader.load("plugin/plugin_ASR.dll");
+	assert(ret);
 	plug.asr.loader.get(plug.asr.init, plugin::name::asrInit);
 	plug.asr.loader.get(plug.asr.transcribe, plugin::name::asrTranscribe);
 	plug.asr.loader.get(plug.asr.free, plugin::name::asrFree);
+	ret = plug.asr.init("plugin/ggml-tiny.bin") == 0;
+	assert(ret);
 
-	assert(plug.asr.init("plugin/ggml-tiny.bin") == 0);
+	loadUiState();
 }
 
 App::~App() {
+	storeUiState();
+
 	plug.asr.free();
 
 #if USE_IMGUI
+
 	// Cleanup
 	ImGui::DestroyPlatformWindows();
 	ImGui_ImplOpenGL3_Shutdown();
