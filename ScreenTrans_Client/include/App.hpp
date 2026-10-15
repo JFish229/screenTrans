@@ -5,6 +5,7 @@
 #include <GLFW/glfw3.h>
 
 #define USE_IMGUI 1
+#define USE_IMGUI_VIEWPORT 1
 
 #if	USE_IMGUI
 #	include "imgui.h"
@@ -44,6 +45,7 @@
 using std::literals::chrono_literals::operator""ms;
 
 #include <boost/lockfree/spsc_queue.hpp>
+#include <boost/cstdfloat.hpp>
 
 #include <gl/Window.h>
 #include <gl/Shader.h>
@@ -53,6 +55,8 @@ using std::literals::chrono_literals::operator""ms;
 #include <gl/Render.h>
 #include <gl/Texture.h>
 #include <gl/util.h>
+
+#include <compile_time.hpp>
 
 #ifndef NDEBUG
 #	define print(x) std::cout<< x
@@ -70,10 +74,10 @@ using std::literals::chrono_literals::operator""ms;
 using ST::H264Encoder, ST::H264Decoder, ST::ScreenCapture;
 
 inline constexpr int SLEEP_TIME = 0;
-inline constexpr size_t MAX_VIDEO_FRAMES = 10;
-inline constexpr size_t KEEP_FRAMES = 4;
-inline constexpr double MAX_MAX_FPS = 150.0;
-inline constexpr double MIN_MAX_FPS = 5.0;
+inline constexpr size_t MAX_VIDEO_FRAMES = 9;
+inline constexpr size_t KEEP_FRAMES = 3;
+inline constexpr boost::float64_t MAX_MAX_FPS = 150.0;
+inline constexpr boost::float64_t MIN_MAX_FPS = 5.0;
 namespace video {
 	inline constexpr int min_bitrate = 2'000'000;
 	inline constexpr int max_bitrate = 20'000'000;
@@ -84,7 +88,7 @@ namespace audio {
 	inline constexpr uint32_t channels = 1;
 	inline constexpr uint32_t periodSizeInFrames = 1000;
 	static_assert(sampleRate% periodSizeInFrames == 0);
-	inline constexpr double periodSec = static_cast<double>(periodSizeInFrames) / sampleRate;
+	inline constexpr boost::float64_t periodSec = static_cast<boost::float64_t>(periodSizeInFrames) / sampleRate;
 	inline constexpr int mixPeriods = 5;
 	inline constexpr int bufSec = 1;
 }
@@ -103,11 +107,11 @@ struct Defer {
 #define NAME(name) CONCAT(CONCAT(name##_, __LINE__), __)
 #define DEFER Defer NAME(defer)
 
-
 class App {
 private:
 	static std::unique_ptr<gl::Window> makeWindow();
-	template<bool lock>
+private:
+	template<bool lock_users>
 	[[nodiscard]] bool isHost();
 	[[nodiscard]] bool clientClosed();
 private:
@@ -118,6 +122,8 @@ private:
 	void audioMix();
 	void asrRecv();
 private:
+	void storeUiState();
+	void loadUiState();
 	void pageRenderBegin(const char* title, int sleepTime);
 	void pageRenderEnd();
 	struct PageRenderGuard {
@@ -132,29 +138,27 @@ private:
 		makeRoom,
 		enterRoom,
 		Show,
-		//serverStatusError,
 		Tmp,
 		//count,
 	};
 	struct P1 {
-		static inline constexpr size_t buf_size = 256;
-		char ipv4[buf_size]{};
 		static inline constexpr uint16_t invalid_port{ 0 };
-		uint16_t port{ invalid_port };
-		char name[buf_size]{};
+		ALIGN(char) ipv4[64]{};
+		ALIGN(uint16_t) port{ invalid_port };
+		ALIGN(char) name[128]{};
 	}p1;
 	Page connectToServer();
 
 	Page chooseMode();
 
 	struct P2 {
-		uint32_t passwd{ Room::invalid_passwd };
+		ALIGN(uint32_t) passwd{ Room::invalid_passwd };
 	}p2;
 	Page makeRoom();
 
 	struct P3 {
-		uint32_t room_id{ Room::invalid_id };
-		uint32_t passwd{ Room::invalid_passwd };
+		ALIGN(uint32_t) room_id{ room::invalid_id };
+		ALIGN(uint32_t) passwd{ Room::invalid_passwd };
 	}p3;
 	Page enterRoom();
 
@@ -165,6 +169,7 @@ private:
 		enum class End {
 			clientClosed = 0,
 			kickOff,
+			Return,
 			Default = clientClosed,
 		};
 		ShowPara() { restore(); }
@@ -187,12 +192,12 @@ private:
 		Page back{Page::Tmp};
 	}p_tmp;
 	Page Tmp();
-	Page makeTmp(const std::string& title, std::string content, Page back);
+	Page makeTmp(std::string title, std::string content, Page back);
 	Page makeTmpServerStatusError() {
 		return makeTmp("server_status_error", "server status error. please reconnect or close the window", Page::connectToServer);
 	}
 
-public:
+private:
 	net::InitGuard initGuard{};
 	gl::GlfwInitGuard glfwInitGuard;
 	std::unique_ptr<gl::Window> window{ makeWindow() };
@@ -206,7 +211,8 @@ public:
 	struct {
 		std::mutex mtx_name;
 		std::string name{};
-		uint32_t room_id{ Room::invalid_id };
+		std::atomic<user::id_t> id{ user::invalid_id };
+		uint32_t room_id{ room::invalid_id };
 		uint32_t passwd{ Room::invalid_passwd };
 	} logger;
 	Page page{ Page::connectToServer };
@@ -220,13 +226,16 @@ public:
 
 	std::queue<ST::DecodedFrame> total_video_frames;
 	std::atomic<bool> close_signal = false;
-	std::atomic<net::socket_t> chosen_user; // init with self
 	struct User {
 		std::atomic<bool> is_host{ false };
+		std::atomic<bool> share_video{ false };
+		std::atomic<bool> share_audio{ false };
+		static constexpr float audio_playing_least = 0.01f;
+		std::atomic<bool> audio_playing{ false };
 		std::string name;
 		boost::lockfree::spsc_queue<float> audioBuf{ audio::sampleRate * audio::channels * audio::bufSec };
 	};
-	std::unordered_map < net::socket_t, User > users; // init with self
+	std::unordered_map < user::id_t, User > users; // init with self
 	std::vector<float> audioFramesLong{};
 	std::string speechWords;
 
@@ -235,14 +244,42 @@ public:
 	audio::Player audioPlayer{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, &audioUser, audio::User::callback };
 	net::tcp::Client client{ net::tcp::Ip::v4 };
 
+	using bool8_t = std::conditional_t<sizeof(bool) == 1, bool, uint8_t>;
+
+	struct Ui {
+		P1 p1;
+		P2 p2;
+		P3 p3;
+		struct {
+			ALIGN(bool8_t) share_audio {};
+			ALIGN(bool8_t) share_video {};
+			ALIGN(boost::float64_t) fps{20};
+		} send;
+		struct {
+			ALIGN(boost::float64_t) fps{100};
+			struct {
+				ALIGN(int32_t) fps{};
+				ALIGN(int32_t) bitrate{};
+				ALIGN(int32_t) width{};
+				ALIGN(int32_t) height{};
+			} encode;
+		} video;
+		struct RoomUser {
+			struct {
+				ALIGN(uint32_t) set_room_passwd{};
+				ALIGN(bool8_t) mute_all_keep{};
+			} host;
+		} room_user;
+	};
+
 	struct {
 		struct {
 			std::atomic<bool> share_audio{ false };
 			std::atomic<bool> share_video{ false };
-			std::atomic<double> fps = 20;
+			std::atomic<boost::float64_t> fps = 20;
 		} send;
 		struct {
-			std::atomic<double> fps = 100;
+			std::atomic<boost::float64_t> fps = 64;
 			struct {
 				std::mutex mtx;
 				std::atomic<int> fps = 30;
@@ -252,10 +289,19 @@ public:
 				std::counting_semaphore<> wait_wh{0};
 			} encode;
 		} video;
-		struct {
+		struct RoomUser{
 			std::atomic<bool> is_kicked_off{ false };
-			std::atomic<net::socket_t> wanna_kick_off{ net::invalid_socket };
-		} account;
+			std::atomic<bool> is_muted_keep{ false };
+			std::atomic<user::id_t> chosen_user; // init with self
+			struct {
+				std::atomic<user::id_t> wanna_kick_off{ user::invalid_id };
+				std::atomic<user::id_t> transfer_host{ user::invalid_id };
+				std::atomic<uint32_t> room_passwd{ Room::invalid_passwd };
+				std::atomic<uint32_t> set_room_passwd{ Room::invalid_passwd };
+				std::atomic<bool> mute_all_once{ false };
+				std::atomic<bool> mute_all_keep{ false };
+			} host;
+		} room_user;
 	} ui;
 
 	void* any_usage{nullptr}; // now only for renderFunc in draw function

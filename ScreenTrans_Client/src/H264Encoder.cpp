@@ -112,7 +112,6 @@ namespace ST {
             return SetSourceSize(srcWidth, srcHeight);
         }
 
-        Destroy();
         return Initialize(srcWidth, srcHeight, encWidth, encHeight, fps, bitrate);
     }
 
@@ -132,6 +131,7 @@ namespace ST {
         }
 
         // 重建 SwsContext
+        const auto old_sws = m_sws;
         if (m_sws) {
             sws_freeContext(m_sws);
             m_sws = nullptr;
@@ -148,6 +148,7 @@ namespace ST {
         );
 
         if (!m_sws) {
+            m_sws = old_sws;
             std::cerr << "SetSourceSize: sws_getContext failed" << std::endl;
             return false;
         }
@@ -216,6 +217,12 @@ namespace ST {
             Destroy();
             return false;
         }
+
+        // 强行同步真实尺寸
+        encWidth = m_ctx->width;
+        encHeight = m_ctx->height;
+        m_width = encWidth;
+        m_height = encHeight;
 
         av_dict_free(&opts);
 

@@ -39,7 +39,7 @@ namespace audio {
         bool IsRunning() const { return m_running; }
 
         // std::move
-        std::vector<float> Frames();
+        std::vector<float>& giveFrames(std::vector<float>& out);
 
     private:
         static void DataCallback(
