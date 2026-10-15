@@ -1,4 +1,5 @@
-﻿#include <windows.h>
+﻿#pragma once
+#include <windows.h>
 #include <string>
 namespace wins {
     inline std::string WideToUtf8(const std::wstring_view w) {

@@ -54,6 +54,26 @@ namespace ImGui {
 		ImGuiID dockspace_id = ImGui::GetID("MyDockspace");
 		ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_None);
 	}
+
+	void PushU64(uint64_t id) {
+		ImGui::PushID(static_cast<int>( id & 0xFFFFFFFFu));
+		ImGui::PushID(static_cast<int>((id >> 32) & 0xFFFFFFFFu));
+	}
+
+	void PopU64() {
+		ImGui::PopID();
+		ImGui::PopID();
+	}
+
+	struct PushU64Guard {
+		PushU64Guard(uint64_t id) { PushU64(id); }
+		~PushU64Guard() { PopU64(); }
+	};
+
+	struct PushIdGuard {
+		PushIdGuard(int id) { ImGui::PushID(id); }
+		~PushIdGuard() { ImGui::PopID(); }
+	};
 }
 #endif
 
@@ -61,7 +81,7 @@ std::unique_ptr<gl::Window> App::makeWindow() {
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-	auto res = std::make_unique<gl::Window>(800, 600, glm::ivec2{ 200, 100 }, "client");
+	auto res = std::make_unique<gl::Window>(1200, 600, glm::ivec2{ 200, 100 }, "FlexMeet-client");
 	glfwMakeContextCurrent(res->m_get);
 	GLASSERTK(gladLoadGLLoader((GLADloadproc)glfwGetProcAddress));
 	glEnable(GL_BLEND);
@@ -78,27 +98,24 @@ void App::storeUiState() {
 	assert(file);
 	Ui buf_ui;
 
-	constexpr int BEGIN = __LINE__ + 1;
-	memcpy(buf_ui.p1.ipv4, p1.ipv4, sizeof(p1.ipv4));//
-	buf_ui.p1.port = p1.port;
-	memcpy(buf_ui.p1.name, p1.name, sizeof(p1.ipv4));
-	buf_ui.p2.passwd = p2.passwd;//
-	buf_ui.p3.room_id = p3.room_id;//
-	buf_ui.p3.passwd = p3.passwd;//
-	buf_ui.send.fps = ui.send.fps;//
-	buf_ui.send.share_audio = ui.send.share_audio;
-	buf_ui.send.share_video = ui.send.share_video;
-	buf_ui.video.fps = ui.video.fps;//
-	buf_ui.video.encode.fps = ui.video.encode.fps;
-	buf_ui.video.encode.bitrate = ui.video.encode.bitrate;
-	buf_ui.video.encode.width = ui.video.encode.width;
-	buf_ui.video.encode.height = ui.video.encode.height;
-	buf_ui.room_user.is_kicked_off = ui.room_user.is_kicked_off;//
-	buf_ui.room_user.chosen_user = static_cast<user::id_t>(get(ui.room_user.chosen_user));
-	buf_ui.room_user.host.wanna_kick_off = static_cast<user::id_t>(get(ui.room_user.host.wanna_kick_off));
-	buf_ui.room_user.host.room_passwd = ui.room_user.host.room_passwd;
-	buf_ui.room_user.host.set_room_passwd = ui.room_user.host.set_room_passwd;
-	constexpr int END = __LINE__;
+	constexpr size_t BEGIN = __LINE__ + 1; // === BEGIN - 1 ===
+	memcpy(	buf_ui.p1.ipv4,							p1.ipv4, sizeof(p1.ipv4));//
+			buf_ui.p1.port							= net::host_to_network(p1.port);
+	memcpy(	buf_ui.p1.name,							p1.name, sizeof(p1.ipv4));
+			buf_ui.p2.passwd						= net::host_to_network(p2.passwd);//
+			buf_ui.p3.room_id						= net::host_to_network(p3.room_id);//
+			buf_ui.p3.passwd						= net::host_to_network(p3.passwd);//
+			buf_ui.send.fps							= net::host_to_network(get(ui.send.fps));//
+			buf_ui.send.share_audio					= net::host_to_network(get(ui.send.share_audio));
+			buf_ui.send.share_video					= net::host_to_network(get(ui.send.share_video));
+			buf_ui.video.fps						= net::host_to_network(get(ui.video.fps));//
+			buf_ui.video.encode.fps					= net::host_to_network(get(ui.video.encode.fps));
+			buf_ui.video.encode.bitrate				= net::host_to_network(get(ui.video.encode.bitrate));
+			buf_ui.video.encode.width				= net::host_to_network(get(ui.video.encode.width));
+			buf_ui.video.encode.height				= net::host_to_network(get(ui.video.encode.height));
+			buf_ui.room_user.host.set_room_passwd	= net::host_to_network(get(ui.room_user.host.set_room_passwd));
+			buf_ui.room_user.host.mute_all_keep		= net::host_to_network(get(ui.room_user.host.mute_all_keep));
+	constexpr size_t END = __LINE__; // === END ===
 	static_assert(END - BEGIN == count_basic_members<Ui>());
 
 	std::fwrite(&buf_ui, sizeof(buf_ui), 1, file);
@@ -114,27 +131,24 @@ void App::loadUiState() {
 	std::rewind(file);
 	Ui buf_ui;
 	fread(&buf_ui, sizeof(Ui), 1, file);
-	constexpr int BEGIN = __LINE__ + 1;
-	memcpy(p1.ipv4, buf_ui.p1.ipv4, sizeof(p1.ipv4));//
-	p1.port = buf_ui.p1.port;
-	memcpy(p1.name, buf_ui.p1.name, sizeof(p1.ipv4));
-	p2.passwd = buf_ui.p2.passwd;//
-	p3.room_id = buf_ui.p3.room_id;//
-	p3.passwd = buf_ui.p3.passwd;//
-	ui.send.fps = buf_ui.send.fps;//
-	ui.send.share_audio = buf_ui.send.share_audio;
-	ui.send.share_video = buf_ui.send.share_video;
-	ui.video.fps = buf_ui.video.fps;//
-	ui.video.encode.fps = buf_ui.video.encode.fps;
-	ui.video.encode.bitrate = buf_ui.video.encode.bitrate;
-	ui.video.encode.width = buf_ui.video.encode.width;
-	ui.video.encode.height = buf_ui.video.encode.height;
-	ui.room_user.is_kicked_off = buf_ui.room_user.is_kicked_off;//
-	ui.room_user.chosen_user = buf_ui.room_user.chosen_user;
-	ui.room_user.host.wanna_kick_off = buf_ui.room_user.host.wanna_kick_off;
-	ui.room_user.host.room_passwd = buf_ui.room_user.host.room_passwd;
-	ui.room_user.host.set_room_passwd = buf_ui.room_user.host.set_room_passwd;
-	constexpr int END = __LINE__;
+	constexpr size_t BEGIN = __LINE__ + 1; // === BEGIN -1 ===
+	memcpy( p1.ipv4,							buf_ui.p1.ipv4, sizeof(p1.ipv4));//
+			p1.port	=							net::network_to_host(buf_ui.p1.port);
+	memcpy( p1.name,							buf_ui.p1.name, sizeof(p1.ipv4));
+			p2.passwd =							net::network_to_host(buf_ui.p2.passwd);//
+			p3.room_id =						net::network_to_host(buf_ui.p3.room_id);//
+			p3.passwd =							net::network_to_host(buf_ui.p3.passwd);//
+	set(	ui.send.fps,						net::network_to_host(buf_ui.send.fps));//
+	set(	ui.send.share_audio,				net::network_to_host(buf_ui.send.share_audio));
+	set(	ui.send.share_video,				net::network_to_host(buf_ui.send.share_video));
+	set(	ui.video.fps,						net::network_to_host(buf_ui.video.fps));//
+	set(	ui.video.encode.fps,				net::network_to_host(buf_ui.video.encode.fps));
+	set(	ui.video.encode.bitrate,			net::network_to_host(buf_ui.video.encode.bitrate));
+	set(	ui.video.encode.width,				net::network_to_host(buf_ui.video.encode.width));
+	set(	ui.video.encode.height,				net::network_to_host(buf_ui.video.encode.height));
+	set(	ui.room_user.host.set_room_passwd,	net::network_to_host(buf_ui.room_user.host.set_room_passwd));
+	set(	ui.room_user.host.mute_all_keep,	net::network_to_host(buf_ui.room_user.host.mute_all_keep));
+	constexpr size_t END = __LINE__; // === END ===
 	static_assert(END - BEGIN == count_basic_members<Ui>());
 }
 
@@ -171,31 +185,26 @@ void App::Receive() {
 		uint32_t room_passwd{};
 		bool is_host_from_client{};
 		user::id_t wanna_kick_off{};
+		bool mute_all_once{};
+		bool mute_all_keep{};
 		bool share_audio{};
 		std::vector<float> audioFrames{};
 		bool share_video{};
 		int32_t pk_size{};
 		std::vector<uint8_t> pk{};
 		void restore() {
-			signals = 0;
-			id = user::invalid_id;
-			is_host_from_server = false;
-			room_passwd = Room::invalid_passwd;
-			is_host_from_client = false;
-			share_audio = false;
-			wanna_kick_off = user::invalid_id;
-			share_video = false;
-			pk_size = 0;
 		}
 	} rv;
 
 	while (!p_show.ended() && !clientClosed()) {
 		rv.restore();
 		bool recv_ok{true};
-		recv_ok &= client.ReceiveBy(rv.signals);
-		recv_ok &= client.ReceiveBy(rv.id);
-		if (!recv_ok) [[unlikely]] { break; }
-		if (rv.signals & signal_closed) {
+		if (!client.ReceiveBy(rv.signals) ||  
+			!client.ReceiveBy(rv.id)) [[unlikely]] 
+		{
+			break;
+		}
+		if (rv.signals & signal_closed) [[unlikely]] {
 			{
 				std::lock_guard lock(mtx_users);
 				auto count = std::erase_if(users, [&](auto& user) { return user.first == rv.id;});
@@ -204,42 +213,57 @@ void App::Receive() {
 			continue;
 		}
 
-		recv_ok &= client.ReceiveBy(rv.other_name);
-		recv_ok &= client.ReceiveBy(rv.is_host_from_server);
-		if (!recv_ok) [[unlikely]] { break; }
+		client.ReceiveBy(rv.other_name);
+		if (!client.ReceiveBy(rv.is_host_from_server)) [[unlikely]] { break; }
 		if (rv.is_host_from_server && get(logger.id) == rv.id) {
-			recv_ok &= client.ReceiveBy(rv.room_passwd);
+			if (!client.ReceiveBy(rv.room_passwd)) [[unlikely]] { break; }
 			set(ui.room_user.host.room_passwd, rv.room_passwd);
 		}
-		recv_ok &= client.ReceiveBy(rv.is_host_from_client);
-		if (!recv_ok) [[unlikely]] { break; }
+		if (!client.ReceiveBy(rv.is_host_from_client)) [[unlikely]] { break; }
 		if (rv.is_host_from_client) {
-			recv_ok &= client.ReceiveBy(rv.wanna_kick_off);
+			client.ReceiveBy(rv.wanna_kick_off);
+			client.ReceiveBy(rv.mute_all_once);
+			client.ReceiveBy(rv.mute_all_keep);
 		}
-		recv_ok &= client.ReceiveBy(rv.share_audio);
+		if (!client.ReceiveBy(rv.share_audio)) [[unlikely]] { break; }
 		if (rv.share_audio) {
-			recv_ok &= client.ReceiveBy(rv.audioFrames);
+			client.ReceiveBy(rv.audioFrames);
 		}
 		else {
 			rv.audioFrames.resize(0);
 		}
-		if (!recv_ok) [[unlikely]] { break; }
+		if (!client.ReceiveBy(rv.share_video)) [[unlikely]] { break; }
 
-		if (rv.wanna_kick_off == get(logger.id)) {
-			p_show.setEnd(true, ShowPara::End::kickOff);
+
+		if (rv.is_host_from_client) {
+			if (rv.wanna_kick_off == get(logger.id)) [[unlikely]] {
+				p_show.setEnd(true, ShowPara::End::kickOff);
+			}
+			if (rv.mute_all_once && rv.id != logger.id) [[unlikely]] {
+				set(ui.send.share_audio, false);
+			}
+			if (rv.mute_all_keep && rv.id != logger.id) {
+				set(ui.send.share_audio, false);
+				set(ui.room_user.is_muted_keep, true);
+			}
+			else {
+				set(ui.room_user.is_muted_keep, false);
+			}
 		}
 		{
 			std::lock_guard lock(mtx_users);
 			auto [itr, first] = users.try_emplace(rv.id);
 			itr->second.name = rv.other_name;
-			users[rv.id].audioBuf.push(rv.audioFrames.begin(), rv.audioFrames.end());
-			set(users[rv.id].is_host, rv.is_host_from_server);
+			auto& user = users[rv.id];
+			user.audioBuf.push(rv.audioFrames.begin(), rv.audioFrames.end());
+			set(user.share_audio, rv.share_audio);
+			set(user.is_host, rv.is_host_from_server);
+			set(user.share_video, rv.share_video);
 		}
 
 		if (rv.signals & signal_choiceNotMatch) { continue; }
 
 		// each packet
-		client.ReceiveBy(rv.share_video);
 		if (rv.share_video) {
 			if (!client.ReceiveBy(rv.pk_size)) [[unlikely]] { break; }
 			for (int i = 0;i < rv.pk_size;++i) {
@@ -342,10 +366,15 @@ void App::Send() {
 			set(ui.room_user.host.set_room_passwd, Room::invalid_passwd);
 			client.Send(get(ui.room_user.host.wanna_kick_off));
 			set(ui.room_user.host.wanna_kick_off, user::invalid_id);
+			client.Send(get(ui.room_user.host.transfer_host));
+			set(ui.room_user.host.transfer_host, user::invalid_id);
+			client.Send(get(ui.room_user.host.mute_all_once));
+			set(ui.room_user.host.mute_all_once, false);
+			client.Send(get(ui.room_user.host.mute_all_keep));
 		}
 		client.Send(share_audio);
 		if (share_audio) {
-			client.Send(std::move(ad_cpt.giveFrames(buf_audio)));//move
+			client.Send(ui.room_user.is_muted_keep ? std::vector<float>{} : std::move(ad_cpt.giveFrames(buf_audio)));//move
 		}
 		client.Send(get(ui.room_user.chosen_user));
 		client.Send(share_video);
@@ -387,18 +416,23 @@ void App::audioMix()
 		 */
 		{
 			std::lock_guard lock{ mtx_users };
-
 			for (auto& user : users) {
-
-				const size_t thisSamples =
-					user.second.audioBuf.pop( getBuf.data(), samples );
-
+				const size_t thisSamples = user.second.audioBuf.pop( getBuf.data(), samples );
 				realSamples = std::max( realSamples, thisSamples );
-
-				for (size_t i = 0; i < thisSamples; ++i)
-				{
-					mixBuf[i] += getBuf[i];
+				bool audio_playing{ false };
+				if (user.first != logger.id) {
+					for (size_t i = 0; i < thisSamples; ++i) {
+						audio_playing |= std::abs(getBuf[i]) > User::audio_playing_least;
+						mixBuf[i] += getBuf[i];
+					}
 				}
+				// no self audio
+				else {
+					for (size_t i = 0; i < thisSamples; ++i) {
+						audio_playing |= std::abs(getBuf[i]) > User::audio_playing_least;
+					}
+				}
+				set(user.second.audio_playing, audio_playing);
 			}
 		}
 
@@ -464,11 +498,12 @@ void App::asrRecv()
 		}
 		if (audioBuf.empty()) { continue; }
 
-		int out_bytes = 0;
 
+		int out_bytes = 0;
 		// println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<boost::float64_t>( audioBuf.size() ) / 16000.0 );
 
-		const char* str = plug.asr.transcribe( audioBuf.data(), static_cast<int>( audioBuf.size() ), &out_bytes );
+		//const char* str = plug.asr.transcribe( audioBuf.data(), static_cast<int>( audioBuf.size() ), &out_bytes );
+		const char* str = nullptr;
 		/*
 		 * ========================================================
 		 * 保存识别结果
@@ -505,6 +540,16 @@ void App::ShowPara::restore() {
 void App::restoreAfterShow() {
 	p_show.restore();
 	users.clear();
+	glfwSetWindowUserPointer(window->m_get, this);
+	glfwSetWindowPosCallback(window->m_get, [](GLFWwindow* window, int xpos, int ypos) {
+		auto user = static_cast<App*>(glfwGetWindowUserPointer(window));
+		user->window->updatePos({ xpos, ypos });
+		});
+	glfwSetFramebufferSizeCallback(window->m_get, [](GLFWwindow* window, int width, int height) {
+		auto user = static_cast<App*>(glfwGetWindowUserPointer(window));
+		glViewport(0, 0, width, height);
+		user->window->setViewport({ 0,0,width, height });
+		});
 }
 
 App::Page App::Show() {
@@ -539,49 +584,12 @@ App::Page App::Show() {
 
 	glfwSetWindowTitle(window->m_get, ("client: " + logger.name).c_str());
 
-	constexpr const char* vs = R"(
-#version 330 core
-layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec2 aTexCoords;
-out vec2 texCoords;
-void main(){
-	texCoords = aTexCoords;
-	gl_Position = vec4(aPos.x, -aPos.y, aPos.z, 1.0f);
-}
-)";
-	constexpr const char* fs = R"(
-#version 330 core
-in vec2 texCoords;
-uniform sampler2D sampler;
-out vec4 FragColor;
-void main(){
-	FragColor = texture(sampler, texCoords);
-}
-)";
 	struct imgStruct {
 		float pos[3];
 		float texCoords[2];
 	};
 
-	gl::Shader shader{ vs, fs };
-	shader.use();
-	shader.setUniform("sampler", 0);
 	gl::Texture2D img(1, 1, { 0x33,0x33,0x33,0xFF }, gl::GpuTextureFmt::RGBA8, gl::TextureFmt::BGRA, 4);
-	img.bindTo(0);
-	gl::VertexBufferLayout layoutImg;
-	layoutImg.push<float>(3);
-	layoutImg.push<float>(2);
-	gl::VertexArray vaoImg;
-	std::vector<imgStruct> verticesImg{
-		{{-1.0f, -1.0f, 0.0f}, {0.0f, 0.0f}},
-		{{ 1.0f, -1.0f, 0.0f}, {1.0f, 0.0f}},
-		{{-1.0f,  1.0f, 0.0f}, {0.0f, 1.0f}},
-		{{ 1.0f,  1.0f, 0.0f}, {1.0f, 1.0f}},
-	};
-	gl::VertexBuffer vboImg(layoutImg, gl::toVector<uint8_t>(verticesImg), gl::BufferUsage::Static);
-	gl::IndexBuffer eboImg({ 0,1,2,1,2,3 }, gl::BufferUsage::Static);
-	vaoImg.bindVboAllAttribs({ 0,1 }, vboImg);
-
 
 #if USE_IMGUI
 	const auto DEFAULT_BK_COLOR = style->Colors[ImGuiCol_WindowBg];
@@ -602,7 +610,8 @@ void main(){
 	float fps = 0;
 	bool show_settings = true;
 	struct {
-		char rename[256]{};
+		char name_buf[2 * sizeof(p1.name)]{};
+		char rename[sizeof(p1.name)]{};
 		uint32_t room_passwd{ Room::invalid_passwd };
 	} mid;
 
@@ -624,9 +633,9 @@ void main(){
 
 		glClearColor(0.1f, 0.1f, 0.1f, 0.1f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		shader.use();
-		vaoImg.bind();
-		gl::draw(eboImg, gl::DrawMode::TRIANGLES);
+		//shader.use();
+		//vaoImg.bind();
+		//gl::draw(eboImg, gl::DrawMode::TRIANGLES);
 
 		DEFER {
 			[this]() {window->swapBuffers();}
@@ -645,6 +654,7 @@ void main(){
 			p_show.setEnd(true, ShowPara::End::Return);
 		}
 		if (ImGui::TreeNode("send")) {
+			ImGui::PushIdGuard pushIdGuard(__LINE__);
 			// share_video
 			COMP_ATOMIC(ImGui::Checkbox, "share_video", ui.send.share_video);
 			// share_audio
@@ -654,6 +664,7 @@ void main(){
 			ImGui::TreePop();
 		}// send
 		if (ImGui::TreeNode("vedio")) {
+			ImGui::PushIdGuard pushIdGuard(__LINE__);
 			// fps
 			if (d_time > 0.4) {
 				fps = ImGui::GetIO().Framerate;
@@ -679,11 +690,11 @@ void main(){
 				ImGui::Text("id: %zu", (size_t)(get(logger.id)));
 				ImGui::Text("socket: %zu", (size_t)(client.Id()));
 #			endif
+			// name
+			ImGui::Text("name: %s", logger.name.c_str());
 			// room id
 			uint32_t const_room_id = logger.room_id;
 			ImGui::InputScalar("room_id", ImGuiDataType_U32, &const_room_id);
-			// name
-			ImGui::Text("name: %s", logger.name.c_str());
 			// rename
 			ImGui::InputText("##rename", mid.rename, sizeof(mid.rename), ImGuiInputTextFlags_CharsNoBlank);
 			ImGui::SameLine();
@@ -698,54 +709,127 @@ void main(){
 			COMP_ATOMIC(ImGui::Checkbox, "share_video", ui.send.share_video);
 			// share_audio
 			COMP_ATOMIC(ImGui::Checkbox, "share_audio", ui.send.share_audio);
+			// is_muted_keep
+			bool is_muted_keep = ui.room_user.is_muted_keep;
+			ImGui::SameLine();
+			ImGui::Checkbox("is_muted", &is_muted_keep);
 			{
+				ImGui::PushIdGuard pushIdGuard(__LINE__);
 				std::lock_guard lock(mtx_users);
 				auto chosen = users.find(get(ui.room_user.chosen_user));
 				assert(chosen != users.end());
-				auto name_chosen = users[chosen->first].name + (get(users[chosen->first].is_host) ? "(host)" : "");
-				if (ImGui::BeginCombo("target", name_chosen.c_str())) {
-					for (auto& user : users) {
-						const size_t orig_len = user.second.name.size();
-						user.second.name += (get(user.second.is_host) ? "(host)" : "");
-						if (ImGui::Selectable(user.second.name.c_str())) {
-							set(ui.room_user.chosen_user, user.first);
-							println("chosen user_id: " << user.first);
+				//auto name_chosen = users[chosen->first].name + (get(users[chosen->first].is_host) ? "(host)" : "");
+				auto& chosen_user = users[chosen->first];
+				constexpr char host_signal[] = "(host)";
+				memcpy(mid.name_buf, chosen_user.name.c_str(), chosen_user.name.size() + 1);
+				if (get(chosen_user.is_host)) {
+					memcpy(mid.name_buf + chosen_user.name.size(), &host_signal, sizeof(host_signal));
+				}
+				ImGui::Text("target:");
+				if (ImGui::TreeNode("target", mid.name_buf)) {
+					const bool is_host = isHost<false>();
+					if (ImGui::BeginTable("##target_users", is_host ? 6 : 4, ImGuiTableFlags_SizingFixedFit)) {
+						ImGui::TableSetupColumn("video");
+						ImGui::TableSetupColumn("audio");
+						if (is_host) {
+							ImGui::TableSetupColumn("kick_off");
+							ImGui::TableSetupColumn("transfer_host");
 						}
-						user.second.name.resize(orig_len);
+						ImGui::TableSetupColumn("target");
+						ImGui::TableSetupColumn("##audio_playing");
+						ImGui::TableHeadersRow();
+						for (auto& user : users) {
+							ImGui::PushU64Guard pushU64Guard(user.first);
+
+							const size_t name_len = user.second.name.size();
+							memcpy(mid.name_buf, user.second.name.c_str(), name_len + 1);
+							size_t name_buf_size = user.second.name.size();
+							if (get(user.second.is_host)) {
+								memcpy(mid.name_buf + name_len, &host_signal, sizeof(host_signal));
+								name_buf_size += sizeof(host_signal);
+							}
+							// share_video
+							bool v = get(user.second.share_video);
+							ImGui::TableNextColumn();
+							ImGui::Checkbox("##video", &v);
+							// share_audio
+							v = get(user.second.share_audio);
+							ImGui::TableNextColumn();
+							ImGui::Checkbox("##audio", &v);
+							// kick off
+							if (is_host) {
+								ImGui::TableNextColumn();
+								if (!user.second.is_host) {
+									if (ImGui::Button("kick_off")) {
+										set(ui.room_user.host.wanna_kick_off, user.first);
+									}
+								}
+								else {
+									ImGui::Button("(host)");
+								}
+								ImGui::TableNextColumn();
+								if (ImGui::Button("##transfer_host")) {
+									set(ui.room_user.host.transfer_host, user.first);
+								}
+							}
+							// select user
+							ImGui::TableNextColumn();
+							if (ImGui::Selectable(mid.name_buf)) {
+								set(ui.room_user.chosen_user, user.first);
+							}
+							// audio_playing
+							constexpr const char audio_playing[] = ">))";
+							constexpr const char no_audio_playing[sizeof(audio_playing)] = "___";
+							ImGui::TableNextColumn();
+							if (get(user.second.audio_playing)) {
+								ImGui::Text(audio_playing);
+							}
+							else {
+								ImGui::Text(no_audio_playing);
+							}
+						}
+						ImGui::EndTable();
 					}
-					ImGui::EndCombo();
+					ImGui::TreePop();
 				}
 			}
-			if (isHost<true>() && ImGui::TreeNode("host")) {
-				uint32_t const_room_passwd = get(ui.room_user.host.room_passwd);
-				ImGui::InputScalar("room_passwd", ImGuiDataType_U32, &const_room_passwd);
-				ImGui::InputScalar("##set_room_passwd", ImGuiDataType_U32, &mid.room_passwd);
-				ImGui::SameLine();
-				if (ImGui::Button("reset_passwd")) {
-					set(ui.room_user.host.set_room_passwd, mid.room_passwd);
-					set(ui.room_user.host.room_passwd, mid.room_passwd);
-				}
-				if (ImGui::BeginCombo("kick_off", "invalid user")) {
-					(void)ImGui::Selectable("invalid user");
-					{
-						std::lock_guard lock(mtx_users);
-						for (const auto& user : users) {
-							if (get(user.second.is_host)) {
-								continue;
-							}
-							if (ImGui::Selectable(user.second.name.c_str())) {
-								set(ui.room_user.host.wanna_kick_off, user.first);
-								println("kick off user_id: " << user.first);
-							}
-						}
-					}
-					ImGui::EndCombo();
-				}
-				ImGui::TreePop();
-			}// host
 
 			ImGui::TreePop();
 		}// room_user
+
+		if (isHost<true>() && ImGui::TreeNode("host")) {
+			uint32_t const_room_passwd = get(ui.room_user.host.room_passwd);
+			// mute_all_once 
+			bool mute_all_once = get(ui.room_user.host.mute_all_once);
+			mute_all_once |= ImGui::Button("mute_all_once");
+			set(ui.room_user.host.mute_all_once, mute_all_once);
+			// mute_all_keep
+			COMP_ATOMIC(ImGui::Checkbox, "mute_all_keep", ui.room_user.host.mute_all_keep);
+			ImGui::InputScalar("room_passwd", ImGuiDataType_U32, &const_room_passwd);
+			ImGui::InputScalar("##set_room_passwd", ImGuiDataType_U32, &mid.room_passwd);
+			ImGui::SameLine();
+			if (ImGui::Button("reset_passwd")) {
+				set(ui.room_user.host.set_room_passwd, mid.room_passwd);
+				set(ui.room_user.host.room_passwd, mid.room_passwd);
+			}
+			if (ImGui::TreeNode("kick_off", "kick_off_target")) {
+				{
+					std::lock_guard lock(mtx_users);
+					for (const auto& user : users) {
+						ImGui::PushU64Guard pushU64Guard(user.first);
+						if (get(user.second.is_host)) {
+							continue;
+						}
+						if (ImGui::Selectable(user.second.name.c_str())) {
+							set(ui.room_user.host.wanna_kick_off, user.first);
+							println("kick off user_id: " << user.first);
+						}
+					}
+				}
+				ImGui::TreePop();
+			}
+			ImGui::TreePop();
+		}// host
 
 		if (ImGui::TreeNode("plugin")) {
 			ImGui::BeginChild("##speech", ImVec2(-FLT_MIN, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
@@ -766,6 +850,33 @@ void main(){
 		// ============ main window ============ 
 		style->Colors[ImGuiCol_WindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // Alpha = 0
 		ImGui::Begin("main");
+		{
+			const ImVec2 winSize = ImGui::GetWindowSize();
+			const ImVec2 content_origin = ImGui::GetCursorScreenPos();
+			const auto imgSize = img.imgSize();
+			ImVec2 show_img_size;
+
+			float offsetX{};
+			float offsetY{};
+			const float img_w_y = imgSize.x / imgSize.y;
+			const float win_w_y = winSize.x / winSize.y;
+			if (img_w_y > win_w_y) {
+				offsetX = 0.0f;
+				show_img_size.x = winSize.x;
+				show_img_size.y = show_img_size.x / img_w_y;
+				offsetY = (winSize.y - show_img_size.y) / 2;
+			}
+			else {
+				offsetY = 0.0f;
+				show_img_size.y = winSize.y;
+				show_img_size.x = show_img_size.y * img_w_y;
+				offsetX = (winSize.x - show_img_size.x) / 2;
+			}
+			//ImVec2 img_pos = ImVec2(content_origin.x + offsetX, content_origin.y + offsetY);
+
+			ImGui::SetCursorPos(ImVec2(offsetX, offsetY));
+			ImGui::Image(img.id(), show_img_size);
+		}
 		ImGui::End();// main
 		style->Colors[ImGuiCol_WindowBg] = DEFAULT_BK_COLOR;
 		// ============ main window ============ 
@@ -775,13 +886,14 @@ void main(){
 		// Rendering
 		ImGui::Render();
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-		//if (io->ConfigFlags & ImGuiConfigFlags_ViewportsEnable) [[likely]] {
-		//	GLFWwindow* backup = glfwGetCurrentContext();
-		//	ImGui::UpdatePlatformWindows();
-		//	ImGui::RenderPlatformWindowsDefault();
-		//	glfwMakeContextCurrent(backup);   // 恢复主上下文
-		//}
-
+#if USE_IMGUI_VIEWPORT
+		{
+			GLFWwindow* backup = glfwGetCurrentContext();
+			ImGui::UpdatePlatformWindows();
+			ImGui::RenderPlatformWindowsDefault();
+			glfwMakeContextCurrent(backup);   // 恢复主上下文
+		}
+#endif// USE_IMGUI_VIEWPORT
 
 		d_time += 1 / (boost::float64_t)ImGui::GetIO().Framerate;
 #endif
@@ -845,15 +957,12 @@ void main(){
 	println("show ended");
 	switch (p_show.showEnd()) {
 	case ShowPara::End::clientClosed:
-		println("enter clientClosed");
 		return makeTmp("clientClosed", "your tcp socket closed in the middle.", Page::connectToServer);
 		break;
 	case ShowPara::End::kickOff:
-		println("enter kickOff");
 		return makeTmp("kickOff", "you are kicked off by the room host.", Page::connectToServer);
 		break;
 	case ShowPara::End::Return:
-		println("enter Return");
 		return Page::connectToServer;
 		break;
 	default:
@@ -872,9 +981,9 @@ App::Page App::Tmp() {
 	return p_tmp.back;
 }
 
-App::Page App::makeTmp(const std::string& title, std::string content, Page back) {
-	p_tmp.title = title;
-	p_tmp.content = content;
+App::Page App::makeTmp(std::string title, std::string content, Page back) {
+	p_tmp.title = std::move(title);
+	p_tmp.content = std::move(content);
 	p_tmp.back = back;
 	return Page::Tmp;
 }
@@ -905,13 +1014,12 @@ void App::pageRenderEnd() {
 	// Rendering
 	ImGui::Render();
 	ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-	//if (io->ConfigFlags & ImGuiConfigFlags_ViewportsEnable) [[likely]] {
-	//	GLFWwindow* backup = glfwGetCurrentContext();
-	//	ImGui::UpdatePlatformWindows();
-	//	ImGui::RenderPlatformWindowsDefault();
-	//	glfwMakeContextCurrent(backup);   // 恢复主上下文
-	//}
+#if	USE_IMGUI_VIEWPORT
+	GLFWwindow* backup = glfwGetCurrentContext();
+	ImGui::UpdatePlatformWindows();
+	ImGui::RenderPlatformWindowsDefault();
+	glfwMakeContextCurrent(backup);   // 恢复主上下文
+#endif// USE_IMGUI_VIEWPORT
 #endif	
 	window->swapBuffers();
 }
@@ -984,7 +1092,7 @@ App::Page App::enterRoom() {
 			client.Send(p3.room_id);
 			client.Send(p3.passwd);
 			bool room_id_ok{};
-			if (!client.ReceiveBy(room_id_ok)) { return makeTmpServerStatusError(); }
+			if (!client.ReceiveBy(room_id_ok))	{ return makeTmpServerStatusError(); }
 			if (!room_id_ok)					{ room_id_not_exist = true; continue; }
 			else { room_id_not_exist = false; }
 			bool passwd_ok{};
@@ -1066,7 +1174,9 @@ App::App() {
 	//SetImGuiContext(ImGui::GetCurrentContext());
 	io = &ImGui::GetIO();
 	io->ConfigFlags =
-		//ImGuiConfigFlags_ViewportsEnable |
+#if USE_IMGUI_VIEWPORT
+		ImGuiConfigFlags_ViewportsEnable |
+#endif// USE_IMGUI_VIEWPORT
 		ImGuiConfigFlags_DockingEnable |
 		ImGuiConfigFlags_NavEnableKeyboard |     // Enable Keyboard Controls
 		ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls

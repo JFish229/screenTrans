@@ -3,6 +3,7 @@
 #pragma once
 #include <vector>
 #include <glad/glad.h>
+#include <glm/vec2.hpp>
 
 namespace gl {
 
@@ -101,7 +102,8 @@ namespace gl {
 		void unbind() const;
 		void bind() const;
 		void bindTo(int unit) const;
-
+		unsigned int id() { return m_texture; }
+		glm::vec2 imgSize() { return { static_cast<float>(m_imgW), static_cast<float>(m_imgH) }; }
 	};
 
 	int currentTexture();

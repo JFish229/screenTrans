@@ -38,7 +38,7 @@ void Room::threadSendMsg(User* clientMtx) {
 	}
 
 	Client* client = &clientMtx->client;
-	const user::id_t save_id = this->makeId(*client);
+	const user::id_t save_id = this->makeId(client->Id());
 	println("connected to client user_id: " << save_id);
 
 	using Flag0 = uint8_t;
@@ -54,6 +54,9 @@ void Room::threadSendMsg(User* clientMtx) {
 		bool is_host_from_client{};
 		uint32_t set_passwd{ Room::invalid_passwd };
 		user::id_t wanna_kick_off{};
+		user::id_t transfer_host{};
+		bool mute_all_once{};
+		bool mute_all_keep{};
 		bool share_audio{};
 		std::vector<float> audio_frames{};
 		user::id_t choose_user{};
@@ -61,18 +64,11 @@ void Room::threadSendMsg(User* clientMtx) {
 		int32_t pk_size{};
 		std::vector<std::vector<uint8_t>> packets{};
 		void restore() {
-			id = user::invalid_id;
-			is_host_from_client = false;
-			set_passwd = Room::invalid_passwd;
-			wanna_kick_off = user::invalid_id;
-			share_audio = false;
-			choose_user = user::invalid_id;
-			share_video = false;
-			pk_size = 0;
+
 		}
 	}rv;
 	for (;;) {
-		if (client->Closed() && closedSignalSent.load(std::memory_order_acquire)) { break; }
+		if (client->Closed() && closedSignalSent.load(std::memory_order_acquire)) [[unlikely]] { break; }
 		
 		rv.restore();
 
@@ -84,6 +80,9 @@ void Room::threadSendMsg(User* clientMtx) {
 		if (rv.is_host_from_client) {
 			client->ReceiveBy(rv.set_passwd);
 			client->ReceiveBy(rv.wanna_kick_off);
+			client->ReceiveBy(rv.transfer_host);
+			client->ReceiveBy(rv.mute_all_once);
+			client->ReceiveBy(rv.mute_all_keep);
 		}
 		client->ReceiveBy(rv.share_audio);
 		if (rv.share_audio) {
@@ -102,9 +101,14 @@ void Room::threadSendMsg(User* clientMtx) {
 		}
 
 		//std::vector<std::vector<uint8_t>> packets;
-		if (!client->Closed()) {
-			if (rv.set_passwd != Room::invalid_passwd) {
-				this->setPasswd(rv.set_passwd);
+		if (!client->Closed()) [[likely]] {
+			if (rv.is_host_from_client){
+				if (rv.set_passwd != Room::invalid_passwd && rv.set_passwd != this->passwd()) [[unlikely]] {
+					this->setPasswd(rv.set_passwd);
+				}
+				if (rv.transfer_host != user::invalid_id) [[unlikely]] {
+					this->setHost(rv.transfer_host);
+				}
 			}
 
 			if (!(flags & flag_clientChoiceRecorded) || (rv.choose_user != last_chosen_user)) {
@@ -125,7 +129,7 @@ void Room::threadSendMsg(User* clientMtx) {
 				std::lock_guard lock(cm->mtx);
 				Client* c = &cm->client;
 
-				if (client->Closed()) {
+				if (client->Closed()) [[unlikely]] {
 					c->Send(signal_closed);
 					c->Send(save_id);
 					closedSignalSent.store(true, std::memory_order_release);
@@ -149,16 +153,25 @@ void Room::threadSendMsg(User* clientMtx) {
 				}
 				c->Send(rv.is_host_from_client);
 				if (rv.is_host_from_client) {
-					c->Send(is_host_from_server ? rv.wanna_kick_off : user::invalid_id);
+					if (is_host_from_server) [[likely]] {
+						c->Send(rv.wanna_kick_off);
+						c->Send(rv.mute_all_once);
+						c->Send(rv.mute_all_keep);
+					}
+					else {
+						c->Send(user::invalid_id);
+						c->Send(false);
+						c->Send(false);
+					}
 				}
 				c->Send(rv.share_audio);
 				if (rv.share_audio) {
-					c->Send(c->Id() == client->Id() ? std::vector<float>{} : rv.audio_frames);
+					c->Send(rv.audio_frames);
 				}
+				c->Send(rv.share_video);
 				if (choice_isnt_me) {
 					return;
 				}
-				c->Send(rv.share_video);
 				if (rv.share_video) {
 					c->Send(rv.pk_size);
 					for (int i = 0;i < packet_count;++i) {
@@ -230,7 +243,7 @@ void Room::pushClient(Client c) {
 	}
 	{
 		std::lock_guard lock(m_mtx_client_sockets);
-		std::unique_ptr<User> client = std::make_unique<User>(makeId(c), std::move(c));
+		std::unique_ptr<User> client = std::make_unique<User>(makeId(c.Id()), std::move(c));
 		auto ptr = client.get();
 		m_client_sockets.emplace_back(std::move(client));
 		m_clients_threads.emplace_back(std::jthread(&Room::threadSendMsg, this, ptr));

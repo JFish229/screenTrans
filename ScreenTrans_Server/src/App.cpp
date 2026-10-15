@@ -17,7 +17,7 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 		//end,
 	}page{ Page::choose };
 
-	c->Send(Room::makeId(*c));
+	c->Send(Room::makeId(c->Id()));
 
 	while (1) {
 		switch (page) {

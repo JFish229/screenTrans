@@ -30,10 +30,16 @@ constexpr std::size_t count_basic_members() {
 }
 
 template <typename T>
-consteval size_t decl_align() {
-    static_assert((sizeof(T) & (sizeof(T) - 1)) == 0, "sizeof must be power of 2");
-    static_assert(alignof(T) <= sizeof(T), "natural align exceeds size");
-    return sizeof(T);
+consteval std::size_t decl_align() {
+    if constexpr (std::is_array_v<T>) {
+        return decl_align<std::remove_extent_t<T>>();
+    }
+    else {
+        constexpr std::size_t sz = sizeof(T);
+        static_assert((sz & (sz - 1)) == 0, "sizeof must be power of 2");
+        static_assert(alignof(T) <= sz, "natural align exceeds size");
+        return sz;
+    }
 }
 
 #define ALIGN(type) alignas(decl_align<type>()) type

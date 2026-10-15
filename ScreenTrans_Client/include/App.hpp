@@ -5,6 +5,7 @@
 #include <GLFW/glfw3.h>
 
 #define USE_IMGUI 1
+#define USE_IMGUI_VIEWPORT 1
 
 #if	USE_IMGUI
 #	include "imgui.h"
@@ -73,8 +74,8 @@ using std::literals::chrono_literals::operator""ms;
 using ST::H264Encoder, ST::H264Decoder, ST::ScreenCapture;
 
 inline constexpr int SLEEP_TIME = 0;
-inline constexpr size_t MAX_VIDEO_FRAMES = 10;
-inline constexpr size_t KEEP_FRAMES = 4;
+inline constexpr size_t MAX_VIDEO_FRAMES = 9;
+inline constexpr size_t KEEP_FRAMES = 3;
 inline constexpr boost::float64_t MAX_MAX_FPS = 150.0;
 inline constexpr boost::float64_t MIN_MAX_FPS = 5.0;
 namespace video {
@@ -191,7 +192,7 @@ private:
 		Page back{Page::Tmp};
 	}p_tmp;
 	Page Tmp();
-	Page makeTmp(const std::string& title, std::string content, Page back);
+	Page makeTmp(std::string title, std::string content, Page back);
 	Page makeTmpServerStatusError() {
 		return makeTmp("server_status_error", "server status error. please reconnect or close the window", Page::connectToServer);
 	}
@@ -227,6 +228,10 @@ private:
 	std::atomic<bool> close_signal = false;
 	struct User {
 		std::atomic<bool> is_host{ false };
+		std::atomic<bool> share_video{ false };
+		std::atomic<bool> share_audio{ false };
+		static constexpr float audio_playing_least = 0.01f;
+		std::atomic<bool> audio_playing{ false };
 		std::string name;
 		boost::lockfree::spsc_queue<float> audioBuf{ audio::sampleRate * audio::channels * audio::bufSec };
 	};
@@ -239,15 +244,15 @@ private:
 	audio::Player audioPlayer{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, &audioUser, audio::User::callback };
 	net::tcp::Client client{ net::tcp::Ip::v4 };
 
-	using bool_8 = std::conditional_t<sizeof(bool) == 1, bool, uint8_t>;
+	using bool8_t = std::conditional_t<sizeof(bool) == 1, bool, uint8_t>;
 
 	struct Ui {
 		P1 p1;
 		P2 p2;
 		P3 p3;
 		struct {
-			ALIGN(bool_8) share_audio{};
-			ALIGN(bool_8) share_video {};
+			ALIGN(bool8_t) share_audio {};
+			ALIGN(bool8_t) share_video {};
 			ALIGN(boost::float64_t) fps{20};
 		} send;
 		struct {
@@ -260,12 +265,9 @@ private:
 			} encode;
 		} video;
 		struct RoomUser {
-			ALIGN(bool) is_kicked_off{};
-			ALIGN(uint64_t) chosen_user {}; // init with self
 			struct {
-				ALIGN(uint64_t) wanna_kick_off{};
-				ALIGN(uint32_t) room_passwd{};
 				ALIGN(uint32_t) set_room_passwd{};
+				ALIGN(bool8_t) mute_all_keep{};
 			} host;
 		} room_user;
 	};
@@ -277,7 +279,7 @@ private:
 			std::atomic<boost::float64_t> fps = 20;
 		} send;
 		struct {
-			std::atomic<boost::float64_t> fps = 100;
+			std::atomic<boost::float64_t> fps = 64;
 			struct {
 				std::mutex mtx;
 				std::atomic<int> fps = 30;
@@ -289,11 +291,15 @@ private:
 		} video;
 		struct RoomUser{
 			std::atomic<bool> is_kicked_off{ false };
+			std::atomic<bool> is_muted_keep{ false };
 			std::atomic<user::id_t> chosen_user; // init with self
 			struct {
 				std::atomic<user::id_t> wanna_kick_off{ user::invalid_id };
+				std::atomic<user::id_t> transfer_host{ user::invalid_id };
 				std::atomic<uint32_t> room_passwd{ Room::invalid_passwd };
 				std::atomic<uint32_t> set_room_passwd{ Room::invalid_passwd };
+				std::atomic<bool> mute_all_once{ false };
+				std::atomic<bool> mute_all_keep{ false };
 			} host;
 		} room_user;
 	} ui;

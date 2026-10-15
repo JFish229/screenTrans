@@ -11,6 +11,7 @@
 #include <shared_mutex>
 #include <unordered_map>
 #include <semaphore>
+#include <utility>
 
 namespace user {
 	using id_t = net::socket_t;
@@ -66,7 +67,10 @@ public:
 	//std::unique_ptr<Client>& client(size_t i) { return m_client_sockets[i]; }
 	std::jthread& thread(size_t i) { return m_clients_threads[i]; }
 	void pushClient(net::tcp::Client c);
-	static user::id_t makeId(net::tcp::Client& c) { return static_cast<user::id_t>(c.Id()); }
+	void setHost(user::id_t id) { m_host_skt = getSocketById(id); }
+
+	constexpr static user::id_t makeId(net::socket_t skt) { return static_cast<user::id_t>(skt); }
+	constexpr static net::socket_t getSocketById(user::id_t id) { return static_cast<net::socket_t>(id); }
 private:
 	void threadSendMsg(User* cm);
 	void threadDeleteThread();
