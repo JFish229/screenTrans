@@ -437,14 +437,6 @@ void App::Send() {
 }
 
 void App::CameraCapture() {
-	DEFER{
-		[this]() { p_show.wait_threads.release(); }
-	};
-	ccap::Provider provider;
-	provider.set(ccap::PropertyName::PixelFormatOutput, ccap::PixelFormat::RGB24);
-	if (provider.findDeviceNames().size() == 0) { return; }
-	if (!provider.open(0, true)) { return; }
-	if (!provider.isStarted()) { return; }
 
 }
 
@@ -1333,15 +1325,6 @@ App::App() {
 	plug.asr.loader.get(plug.asr.free, plugin::name::asrFree);
 	ret = plug.asr.init("plugin/ggml-tiny.bin") == 0;
 	assert(ret);
-
-#ifndef NDEBUG
-	ccap::setLogLevel(ccap::LogLevel::Verbose);
-#else
-	ccap::setLogLevel(ccap::LogLevel::None);
-#endif
-	ccap::setErrorCallback([](ccap::ErrorCode code, std::string_view desc) {
-		std::cerr << "[ccap error] code=" << (int)code << " " << desc << std::endl;
-		});
 
 
 	loadUiState();
