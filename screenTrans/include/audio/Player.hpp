@@ -5,7 +5,7 @@
 #include <mutex>
 
 namespace audio {
-
+    static_assert(sizeof(float) == 4);
     class Player {
     private:
         using Flag = uint8_t;

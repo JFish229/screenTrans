@@ -59,6 +59,9 @@ void Room::threadSendMsg(User* clientMtx) {
 		bool mute_all_keep{};
 		bool share_audio{};
 		std::vector<float> audio_frames{};
+		bool has_words_msg;
+		user::id_t words_msg_target{};
+		char words_msg[words_msg_bytes];
 		user::id_t choose_user{};
 		bool share_video{};
 		int32_t pk_size{};
@@ -87,6 +90,11 @@ void Room::threadSendMsg(User* clientMtx) {
 		client->ReceiveBy(rv.share_audio);
 		if (rv.share_audio) {
 			client->ReceiveBy(rv.audio_frames);
+		}
+		client->ReceiveBy(rv.has_words_msg);
+		if (rv.has_words_msg) {
+			client->ReceiveBy(rv.words_msg_target);
+			client->ReceiveBy(rv.words_msg, sizeof(rv.words_msg));
 		}
 		client->ReceiveBy(rv.choose_user);
 		client->ReceiveBy(rv.share_video);
@@ -167,6 +175,13 @@ void Room::threadSendMsg(User* clientMtx) {
 				c->Send(rv.share_audio);
 				if (rv.share_audio) {
 					c->Send(rv.audio_frames);
+				}
+				c->Send(rv.has_words_msg);
+				if (rv.has_words_msg) [[unlikely]] {
+					c->Send(rv.words_msg_target);
+					if (rv.words_msg_target == user::public_target || makeId(c->Id()) == rv.words_msg_target) {
+						c->Send(rv.words_msg, sizeof(rv.words_msg));
+					}
 				}
 				c->Send(rv.share_video);
 				if (choice_isnt_me) {

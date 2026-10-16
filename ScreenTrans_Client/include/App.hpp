@@ -46,6 +46,12 @@ using std::literals::chrono_literals::operator""ms;
 
 #include <boost/lockfree/spsc_queue.hpp>
 #include <boost/cstdfloat.hpp>
+#include <boost/circular_buffer.hpp>
+
+#include <ccap.h>
+#pragma comment(lib, "mf.lib")
+#pragma comment(lib, "mfplat.lib")
+#pragma comment(lib, "mfuuid.lib")
 
 #include <gl/Window.h>
 #include <gl/Shader.h>
@@ -74,8 +80,8 @@ using std::literals::chrono_literals::operator""ms;
 using ST::H264Encoder, ST::H264Decoder, ST::ScreenCapture;
 
 inline constexpr int SLEEP_TIME = 0;
-inline constexpr size_t MAX_VIDEO_FRAMES = 9;
-inline constexpr size_t KEEP_FRAMES = 3;
+//inline constexpr size_t MAX_VIDEO_FRAMES = 9;
+//inline constexpr size_t KEEP_FRAMES = 3;
 inline constexpr boost::float64_t MAX_MAX_FPS = 150.0;
 inline constexpr boost::float64_t MIN_MAX_FPS = 5.0;
 namespace video {
@@ -92,6 +98,8 @@ namespace audio {
 	inline constexpr int mixPeriods = 5;
 	inline constexpr int bufSec = 1;
 }
+
+inline constexpr size_t words_msg_max_count = 128;
 
 template<typename Fn>
 struct Defer {
@@ -119,6 +127,7 @@ private:
 	void Receive();
 	/* send: id, name, is_host_from_client(, wanna_kick_off), audio_frames, pk_size, pk[n] */
 	void Send();
+	void CameraCapture();
 	void audioMix();
 	void asrRecv();
 private:
@@ -223,8 +232,10 @@ private:
 	std::mutex mtx_audioFramesLong;
 	std::mutex mtx_speechWords;
 
-
-	std::queue<ST::DecodedFrame> total_video_frames;
+	boost::lockfree::spsc_queue<ST::DecodedFrame> total_video_frames_v1{ 4 };
+	boost::lockfree::spsc_queue<ST::DecodedFrame> total_camera_frames{ 4 };
+	boost::lockfree::spsc_queue<ST::DecodedFrame> local_camera_frames{ 4 };
+	//std::queue<ST::DecodedFrame> total_video_frames;
 	std::atomic<bool> close_signal = false;
 	struct User {
 		std::atomic<bool> is_host{ false };
@@ -234,6 +245,10 @@ private:
 		std::atomic<bool> audio_playing{ false };
 		std::string name;
 		boost::lockfree::spsc_queue<float> audioBuf{ audio::sampleRate * audio::channels * audio::bufSec };
+		struct {
+			//std::mutex mtx;
+			boost::circular_buffer<std::string> buf{ words_msg_max_count };
+		} total_words_msg;
 	};
 	std::unordered_map < user::id_t, User > users; // init with self
 	std::vector<float> audioFramesLong{};
@@ -277,6 +292,15 @@ private:
 			std::atomic<bool> share_audio{ false };
 			std::atomic<bool> share_video{ false };
 			std::atomic<boost::float64_t> fps = 20;
+			std::atomic<user::id_t> words_msg_target{ user::public_target }; // invalid => public msg
+			struct {
+				std::mutex mtx;
+				boost::circular_buffer<std::string> buf{ words_msg_max_count };
+			} total_words_msg;
+			struct {
+				char buf[words_msg_bytes]{};
+				std::mutex mtx;
+			} words_msg;
 		} send;
 		struct {
 			std::atomic<boost::float64_t> fps = 64;

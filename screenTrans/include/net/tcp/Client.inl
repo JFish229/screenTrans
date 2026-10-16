@@ -297,6 +297,15 @@ namespace tcp {
 		return true;
 	}
 
+	inline bool Client::ReceiveBy(void* buf, size_t bytes) {
+		auto o_msg_bytes = recv_bytes();
+		if (!o_msg_bytes) { return false; }
+		const msg_size msg_bytes = *o_msg_bytes;
+		if (msg_bytes != bytes) [[unlikely]] { return false; }
+		if (!recv_msg(buf, msg_bytes)) { return false; }
+		return true;
+	}
+
 	inline std::optional<msg_size> Client::recv_all(void* buf, msg_size len) {
 #		ifdef _WIN32
 			using recv_ret_t = int;

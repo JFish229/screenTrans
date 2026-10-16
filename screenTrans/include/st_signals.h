@@ -15,3 +15,5 @@ using Choice = int;
 constexpr inline Choice choice_invalid		= -1;
 constexpr inline Choice choice_enter_room	= 0;
 constexpr inline Choice choice_make_room	= 1;
+
+constexpr size_t words_msg_bytes = 256;
