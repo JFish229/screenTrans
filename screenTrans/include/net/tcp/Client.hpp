@@ -102,6 +102,8 @@ namespace net {
 
             template<CIsVector Vec>
             bool ReceiveBy(Vec& out);
+
+            bool ReceiveBy(void* buf, size_t bytes);
         };
     }
 };

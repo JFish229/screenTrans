@@ -16,6 +16,7 @@
 namespace user {
 	using id_t = net::socket_t;
 	inline constexpr id_t invalid_id = net::invalid_socket;
+	inline constexpr user::id_t public_target = static_cast<user::id_t>(net::invalid_socket);
 }
 
 namespace room {

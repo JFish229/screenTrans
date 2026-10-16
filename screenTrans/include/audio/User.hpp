@@ -2,6 +2,7 @@
 #include <boost/lockfree/spsc_queue.hpp>
 #include <vector>
 namespace audio {
+	static_assert(sizeof(float) == 4);
 	class User {
 	private:
 		const uint32_t m_channels;

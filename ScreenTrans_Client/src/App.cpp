@@ -25,7 +25,7 @@
 #elif defined(__linux__)
 #   define FONT_CJK_PATH "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
 #else
-#   define FONT_CJK_PATH ""   // 未知平台
+	static_assert(false, "unsupported platform font");
 #endif
 
 #if USE_IMGUI
@@ -189,6 +189,9 @@ void App::Receive() {
 		bool mute_all_keep{};
 		bool share_audio{};
 		std::vector<float> audioFrames{};
+		bool has_words_msg{};
+		user::id_t words_msg_target{};
+		char words_msg[words_msg_bytes];
 		bool share_video{};
 		int32_t pk_size{};
 		std::vector<uint8_t> pk{};
@@ -232,8 +235,28 @@ void App::Receive() {
 		else {
 			rv.audioFrames.resize(0);
 		}
-		if (!client.ReceiveBy(rv.share_video)) [[unlikely]] { break; }
 
+		if (!client.ReceiveBy(rv.has_words_msg)) [[unlikely]] { break; }
+		if (rv.has_words_msg) [[unlikely]] {
+			client.ReceiveBy(rv.words_msg_target);
+			if (rv.words_msg_target == user::public_target) {
+				client.ReceiveBy(rv.words_msg, sizeof(rv.words_msg));
+				{
+					std::lock_guard lock0(mtx_users);
+					std::lock_guard lock1(ui.send.total_words_msg.mtx);
+					ui.send.total_words_msg.buf.push_back(users[rv.id].name + ": " + rv.words_msg);
+				}
+			}
+			else if (rv.words_msg_target == logger.id) {
+				client.ReceiveBy(rv.words_msg, sizeof(rv.words_msg));
+				{
+					std::lock_guard lock(mtx_users);
+					users[rv.id].total_words_msg.buf.push_back(users[rv.id].name + ": " + rv.words_msg);
+				}
+			}
+		}
+
+		if (!client.ReceiveBy(rv.share_video)) [[unlikely]] { break; }
 
 		if (rv.is_host_from_client) {
 			if (rv.wanna_kick_off == get(logger.id)) [[unlikely]] {
@@ -269,31 +292,35 @@ void App::Receive() {
 			for (int i = 0;i < rv.pk_size;++i) {
 				if (!client.ReceiveBy(rv.pk)) [[unlikely]] { break; }
 				auto frames = decoder.DecodePacket(rv.pk);
-				if (!frames.empty()) {
-					std::lock_guard<std::mutex> lock(mtx_video_frames);
-					size_t current_size = total_video_frames.size();
-					size_t new_count = frames.size();
-
-					if (current_size + new_count > MAX_VIDEO_FRAMES) {
-						while (!total_video_frames.empty())
-							total_video_frames.pop();
-
-						size_t keep = std::min(KEEP_FRAMES, new_count);
-						auto start = frames.end() - keep;
-						for (auto it = start; it != frames.end(); ++it) {
-							total_video_frames.push(std::move(*it));
-						}
-					}
-					else {
-						for (auto& frame : frames) {
-							total_video_frames.push(std::move(frame));
-						}
-					}
+				for (auto& frame : frames) {
+					total_video_frames_v1.push(std::move(frame));
 				}
+				//if (!frames.empty()) {
+				//	std::lock_guard<std::mutex> lock(mtx_video_frames);
+				//	size_t current_size = total_video_frames.size();
+				//	size_t new_count = frames.size();
+
+				//	if (current_size + new_count > MAX_VIDEO_FRAMES) {
+				//		while (!total_video_frames.empty())
+				//			total_video_frames.pop();
+
+				//		size_t keep = std::min(KEEP_FRAMES, new_count);
+				//		auto start = frames.end() - keep;
+				//		for (auto it = start; it != frames.end(); ++it) {
+				//			total_video_frames.push(std::move(*it));
+				//		}
+				//	}
+				//	else {
+				//		for (auto& frame : frames) {
+				//			total_video_frames.push(std::move(frame));
+				//		}
+				//	}
+				//}
 			}
 		}
 		else {
-			total_video_frames.push({ 1,1,{0x33,0x33,0x33,0x00} });
+			total_video_frames_v1.push({ 1,1,{0x33,0x33,0x33,0x00} });
+			//total_video_frames.push({ 1,1,{0x33,0x33,0x33,0x00} });
 		}
 	}
 }
@@ -376,6 +403,28 @@ void App::Send() {
 		if (share_audio) {
 			client.Send(ui.room_user.is_muted_keep ? std::vector<float>{} : std::move(ad_cpt.giveFrames(buf_audio)));//move
 		}
+		bool has_words_msg;
+		{
+			std::lock_guard lock(ui.send.words_msg.mtx);
+			has_words_msg = ui.send.words_msg.buf[0] != '\0';
+		}
+		client.Send(has_words_msg);
+		if (has_words_msg) [[unlikely]] {
+			user::id_t target = get(ui.send.words_msg_target);
+			client.Send(target);
+			char buf[sizeof(ui.send.words_msg.buf)];
+			{
+				std::lock_guard lock(ui.send.words_msg.mtx);
+				memcpy(buf, ui.send.words_msg.buf, sizeof(buf));
+				ui.send.words_msg.buf[0] = '\0';
+			}
+			client.Send(buf, sizeof(buf));
+			if (target != user::public_target) {
+				std::lock_guard lock(mtx_users);
+				auto& user = users[target];
+				user.total_words_msg.buf.push_back(logger.name + ": " + buf);
+			}
+		}
 		client.Send(get(ui.room_user.chosen_user));
 		client.Send(share_video);
 		if (share_video) {
@@ -385,6 +434,18 @@ void App::Send() {
 			}
 		}
 	}
+}
+
+void App::CameraCapture() {
+	DEFER{
+		[this]() { p_show.wait_threads.release(); }
+	};
+	ccap::Provider provider;
+	provider.set(ccap::PropertyName::PixelFormatOutput, ccap::PixelFormat::RGB24);
+	if (provider.findDeviceNames().size() == 0) { return; }
+	if (!provider.open(0, true)) { return; }
+	if (!provider.isStarted()) { return; }
+
 }
 
 void App::audioMix()
@@ -602,14 +663,15 @@ App::Page App::Show() {
 		assert(monitor);
 		const GLFWvidmode* mode = glfwGetVideoMode(monitor);
 		assert(mode);
-		const_cast<int&>(sc_width) = mode->width;
-		const_cast<int&>(sc_height) = mode->height;
+		sc_width = mode->width;
+		sc_height = mode->height;
 	}
 
 	boost::float64_t d_time = 0;
 	float fps = 0;
 	bool show_settings = true;
 	struct {
+		char words_msg_buf[sizeof(ui.send.words_msg.buf)]{};
 		char name_buf[2 * sizeof(p1.name)]{};
 		char rename[sizeof(p1.name)]{};
 		uint32_t room_passwd{ Room::invalid_passwd };
@@ -653,16 +715,75 @@ App::Page App::Show() {
 		if (ImGui::Button("<-")) {
 			p_show.setEnd(true, ShowPara::End::Return);
 		}
-		if (ImGui::TreeNode("send")) {
+		if (ImGui::TreeNode("message")) {
 			ImGui::PushIdGuard pushIdGuard(__LINE__);
+			// fps
+			COMP_ATOMIC_T(ImGui::SliderScalar, "fps", ImGuiDataType_Double, ui.send.fps, &MIN_MAX_FPS, &MAX_MAX_FPS);
 			// share_video
 			COMP_ATOMIC(ImGui::Checkbox, "share_video", ui.send.share_video);
 			// share_audio
 			COMP_ATOMIC(ImGui::Checkbox, "share_audio", ui.send.share_audio);
-			// fps
-			COMP_ATOMIC_T(ImGui::SliderScalar, "fps", ImGuiDataType_Double, ui.send.fps, &MIN_MAX_FPS, &MAX_MAX_FPS);
+			// words_msg
+			if (get(ui.send.words_msg_target) == user::public_target) {
+				constexpr const char public_target[] = "public";
+				memcpy(mid.name_buf, public_target, sizeof(public_target));
+			}
+			else {
+				std::lock_guard lock(mtx_users);
+				auto& name = users[get(ui.send.words_msg_target)].name;
+				memcpy(mid.name_buf, name.c_str(), name.size() + 1);
+			}
+			ImGui::Text("message_target: ");
+			if (ImGui::BeginCombo("##message_targets", mid.name_buf)) {
+				while (true) {
+					if (ImGui::Selectable("public")) {
+						set(ui.send.words_msg_target, user::public_target);
+						break;
+					}
+					{
+						std::lock_guard lock(mtx_users);
+						for (const auto& user : users) {
+							if (user.first == logger.id) { continue; }
+							ImGui::PushU64Guard pushU64Guard(user.first);
+							if (ImGui::Selectable(user.second.name.c_str())) {
+								set(ui.send.words_msg_target, user.first);
+								break;
+							}
+						}
+					}
+					break;
+				}
+				ImGui::EndCombo();
+			}// ##message_targets
+			// total_words_msg
+			ImGui::BeginChild("##speech", ImVec2(-FLT_MIN, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
+			ImGui::PushTextWrapPos(0.0f);   // 0 表示按窗口右边界换行
+			if(ui.send.words_msg_target == user::public_target) {
+				std::lock_guard lock{ ui.send.total_words_msg.mtx };
+				for (const auto& msg : ui.send.total_words_msg.buf) {
+					ImGui::TextUnformatted(msg.c_str());
+				}
+			}
+			else {
+				std::lock_guard lock(mtx_users);
+				auto& msgs = users[get(ui.send.words_msg_target)].total_words_msg;
+				for (const auto& msg : msgs.buf) {
+					ImGui::TextUnformatted(msg.c_str());
+				}
+			}
+			ImGui::PopTextWrapPos();
+			ImGui::EndChild();
+			// words_msg
+			ImGui::InputText("##message", mid.words_msg_buf, sizeof(mid.words_msg_buf));
+			ImGui::SameLine();
+			if (ImGui::Button("send")) {
+				std::lock_guard lock(ui.send.words_msg.mtx);
+				memcpy(ui.send.words_msg.buf, mid.words_msg_buf, sizeof(mid.words_msg_buf));
+				mid.words_msg_buf[0] = '\0';
+			}
+
 			ImGui::TreePop();
-		}// send
+		}// message
 		if (ImGui::TreeNode("vedio")) {
 			ImGui::PushIdGuard pushIdGuard(__LINE__);
 			// fps
@@ -768,7 +889,7 @@ App::Page App::Show() {
 									ImGui::Button("(host)");
 								}
 								ImGui::TableNextColumn();
-								if (ImGui::Button("##transfer_host")) {
+								if (ImGui::Button("transfer")) {
 									set(ui.room_user.host.transfer_host, user.first);
 								}
 							}
@@ -805,6 +926,10 @@ App::Page App::Show() {
 			set(ui.room_user.host.mute_all_once, mute_all_once);
 			// mute_all_keep
 			COMP_ATOMIC(ImGui::Checkbox, "mute_all_keep", ui.room_user.host.mute_all_keep);
+			// room_id
+			uint32_t const_room_id = logger.room_id;
+			ImGui::InputScalar("room_id", ImGuiDataType_U32, &const_room_id);
+			// room_passwd
 			ImGui::InputScalar("room_passwd", ImGuiDataType_U32, &const_room_passwd);
 			ImGui::InputScalar("##set_room_passwd", ImGuiDataType_U32, &mid.room_passwd);
 			ImGui::SameLine();
@@ -904,16 +1029,11 @@ App::Page App::Show() {
 		ST::DecodedFrame frame;
 		{
 			std::lock_guard<std::mutex> lock(mtx_video_frames);
-			if (total_video_frames.empty()) {
-				//PL;
-				return;
-			}
-			else {
-				//PL;
-			}
-
-			frame = std::move(total_video_frames.front());
-			total_video_frames.pop();
+			if (total_video_frames_v1.empty()) { return; }
+			total_video_frames_v1.pop(frame);
+			//if (total_video_frames.empty()) { return; }
+			//frame = std::move(total_video_frames.front());
+			//total_video_frames.pop();
 		}
 
 		int width = frame.width;
@@ -1213,6 +1333,16 @@ App::App() {
 	plug.asr.loader.get(plug.asr.free, plugin::name::asrFree);
 	ret = plug.asr.init("plugin/ggml-tiny.bin") == 0;
 	assert(ret);
+
+#ifndef NDEBUG
+	ccap::setLogLevel(ccap::LogLevel::Verbose);
+#else
+	ccap::setLogLevel(ccap::LogLevel::None);
+#endif
+	ccap::setErrorCallback([](ccap::ErrorCode code, std::string_view desc) {
+		std::cerr << "[ccap error] code=" << (int)code << " " << desc << std::endl;
+		});
+
 
 	loadUiState();
 }

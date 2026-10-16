@@ -115,14 +115,14 @@
       <PreprocessorDefinitions>GLEW_STATIC;</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)/screenTrans/thirdparty/include/miniaudio;$(SolutionDir)/screenTrans/thirdparty/include/ffmpeg_x264;$(SolutionDir)/screenTrans/include;$(SolutionDir)/screenTrans/thirdparty/include/imgui;$(SolutionDir)/screenTrans/thirdparty/include;$(SolutionDir)/screenTrans/thirdparty/include/gl;$(SolutionDir)/screenTrans/thirdparty/include/glad;$(SolutionDir)/screenTrans/thirdparty/include/boost;$(SolutionDir)/ASR/include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>third/ccap;include;$(SolutionDir)/screenTrans/thirdparty/include/miniaudio;$(SolutionDir)/screenTrans/thirdparty/include/ffmpeg_x264;$(SolutionDir)/screenTrans/include;$(SolutionDir)/screenTrans/thirdparty/include/imgui;$(SolutionDir)/screenTrans/thirdparty/include;$(SolutionDir)/screenTrans/thirdparty/include/gl;$(SolutionDir)/screenTrans/thirdparty/include/glad;$(SolutionDir)/screenTrans/thirdparty/include/boost;$(SolutionDir)/ASR/include</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(SolutionDir)$(Platform)\$(Configuration);$(SolutionDir)/screenTrans/thirdparty/lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>ffmpeg_x264.lib;freetype.lib;screenTrans.lib;opengl32.lib;glfw3.lib;glew32s.lib;dxguid.lib;d3d12.lib;dxgi.lib;D3DCompiler.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>third/ccap;$(SolutionDir)$(Platform)\$(Configuration);$(SolutionDir)/screenTrans/thirdparty/lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ccapd.lib;ffmpeg_x264.lib;freetype.lib;screenTrans.lib;opengl32.lib;glfw3.lib;glew32s.lib;dxguid.lib;d3d12.lib;dxgi.lib;D3DCompiler.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -134,15 +134,15 @@
       <PreprocessorDefinitions>GLEW_STATIC;NDEBUG</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)/screenTrans/thirdparty/include/miniaudio;$(SolutionDir)/screenTrans/thirdparty/include/ffmpeg_x264;$(SolutionDir)/screenTrans/include;$(SolutionDir)/screenTrans/thirdparty/include/imgui;$(SolutionDir)/screenTrans/thirdparty/include;$(SolutionDir)/screenTrans/thirdparty/include/gl;$(SolutionDir)/screenTrans/thirdparty/include/glad;$(SolutionDir)/screenTrans/thirdparty/include/boost;$(SolutionDir)/ASR/include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>third/ccap;include;$(SolutionDir)/screenTrans/thirdparty/include/miniaudio;$(SolutionDir)/screenTrans/thirdparty/include/ffmpeg_x264;$(SolutionDir)/screenTrans/include;$(SolutionDir)/screenTrans/thirdparty/include/imgui;$(SolutionDir)/screenTrans/thirdparty/include;$(SolutionDir)/screenTrans/thirdparty/include/gl;$(SolutionDir)/screenTrans/thirdparty/include/glad;$(SolutionDir)/screenTrans/thirdparty/include/boost;$(SolutionDir)/ASR/include</AdditionalIncludeDirectories>
       <InlineFunctionExpansion>Default</InlineFunctionExpansion>
       <FavorSizeOrSpeed>Neither</FavorSizeOrSpeed>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(SolutionDir)$(Platform)\$(Configuration);$(SolutionDir)/screenTrans/thirdparty/lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>ffmpeg_x264.lib;freetype.lib;screenTrans.lib;opengl32.lib;glfw3.lib;glew32s.lib;dxguid.lib;d3d12.lib;dxgi.lib;D3DCompiler.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>third/ccap;$(SolutionDir)$(Platform)\$(Configuration);$(SolutionDir)/screenTrans/thirdparty/lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ccap.lib;ffmpeg_x264.lib;freetype.lib;screenTrans.lib;opengl32.lib;glfw3.lib;glew32s.lib;dxguid.lib;d3d12.lib;dxgi.lib;D3DCompiler.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
