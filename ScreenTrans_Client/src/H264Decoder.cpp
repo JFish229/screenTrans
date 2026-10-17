@@ -57,7 +57,7 @@ namespace ST {
 
     std::vector<DecodedFrame>
         H264Decoder::DecodePacket(
-            const std::vector<uint8_t>& packet)
+            std::vector<uint8_t>& packet)
     {
         std::vector<DecodedFrame> frames;
 
@@ -68,6 +68,10 @@ namespace ST {
             return frames;
 
         av_packet_unref(m_pkt);
+
+        constexpr int padding_size = AV_INPUT_BUFFER_PADDING_SIZE;
+
+        packet.resize(packet.size() + padding_size);
 
         m_pkt->data =
             const_cast<uint8_t*>(packet.data());
@@ -135,7 +139,6 @@ namespace ST {
             out.width = width;
             out.height = height;
 
-            constexpr int padding_size = AV_INPUT_BUFFER_PADDING_SIZE;
 
             out.rgba.resize(
                 width * height * 4 + padding_size
@@ -165,39 +168,40 @@ namespace ST {
             );
         }
 
+        packet.resize(packet.size() - padding_size);
         return frames;
     }
 
-    std::vector<DecodedFrame>
-        H264Decoder::Flush()
-    {
-        std::vector<DecodedFrame> frames;
+    //std::vector<DecodedFrame>
+    //    H264Decoder::Flush()
+    //{
+    //    std::vector<DecodedFrame> frames;
 
-        if (!m_ctx)
-            return frames;
+    //    if (!m_ctx)
+    //        return frames;
 
-        avcodec_send_packet(m_ctx, nullptr);
+    //    avcodec_send_packet(m_ctx, nullptr);
 
-        while (true)
-        {
-            int ret =
-                avcodec_receive_frame(
-                    m_ctx,
-                    m_frame
-                );
+    //    while (true)
+    //    {
+    //        int ret =
+    //            avcodec_receive_frame(
+    //                m_ctx,
+    //                m_frame
+    //            );
 
-            if (ret == AVERROR(EAGAIN))
-                break;
+    //        if (ret == AVERROR(EAGAIN))
+    //            break;
 
-            if (ret == AVERROR_EOF)
-                break;
+    //        if (ret == AVERROR_EOF)
+    //            break;
 
-            if (ret < 0)
-                break;
-        }
+    //        if (ret < 0)
+    //            break;
+    //    }
 
-        return frames;
-    }
+    //    return frames;
+    //}
 
     void H264Decoder::Destroy()
     {

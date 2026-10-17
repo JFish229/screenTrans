@@ -23,7 +23,7 @@ namespace audio {
             uint32_t sampleRate,
             uint32_t channels,
             uint32_t periodSizeInFrames,
-            int bufSec
+            double bufSec
         );
 
         ~Capture();

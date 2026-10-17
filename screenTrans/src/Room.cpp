@@ -38,6 +38,8 @@ void Room::threadSendMsg(User* clientMtx) {
 	}
 
 	Client* client = &clientMtx->client;
+	Client* client_audio = &clientMtx->client_audio;
+
 	const user::id_t save_id = this->makeId(client->Id());
 	println("connected to client user_id: " << save_id);
 
@@ -47,6 +49,9 @@ void Room::threadSendMsg(User* clientMtx) {
 	};
 	Flag0 flags = 0;
 	std::atomic<bool> closedSignalSent{false};
+
+	std::jthread audioThread(&Room::threadSendAudio, this, clientMtx, std::ref(closedSignalSent));
+
 	user::id_t last_chosen_user = user::invalid_id;
 	struct {
 		user::id_t id{};
@@ -55,10 +60,10 @@ void Room::threadSendMsg(User* clientMtx) {
 		uint32_t set_passwd{ Room::invalid_passwd };
 		user::id_t wanna_kick_off{};
 		user::id_t transfer_host{};
-		bool mute_all_once{};
-		bool mute_all_keep{};
-		bool share_audio{};
-		std::vector<float> audio_frames{};
+		//bool mute_all_once{};
+		//bool mute_all_keep{};
+		//bool share_audio{};
+		//std::vector<float> audio_frames{};
 		bool has_words_msg;
 		user::id_t words_msg_target{};
 		char words_msg[words_msg_bytes];
@@ -84,13 +89,13 @@ void Room::threadSendMsg(User* clientMtx) {
 			client->ReceiveBy(rv.set_passwd);
 			client->ReceiveBy(rv.wanna_kick_off);
 			client->ReceiveBy(rv.transfer_host);
-			client->ReceiveBy(rv.mute_all_once);
-			client->ReceiveBy(rv.mute_all_keep);
+			//client->ReceiveBy(rv.mute_all_once);
+			//client->ReceiveBy(rv.mute_all_keep);
 		}
-		client->ReceiveBy(rv.share_audio);
-		if (rv.share_audio) {
-			client->ReceiveBy(rv.audio_frames);
-		}
+		//client->ReceiveBy(rv.share_audio);
+		//if (rv.share_audio) {
+		//	client->ReceiveBy(rv.audio_frames);
+		//}
 		client->ReceiveBy(rv.has_words_msg);
 		if (rv.has_words_msg) {
 			client->ReceiveBy(rv.words_msg_target);
@@ -134,7 +139,7 @@ void Room::threadSendMsg(User* clientMtx) {
 			std::shared_lock lock(m_mtx_client_sockets);
 			std::for_each(std::execution::par, m_client_sockets.begin(), m_client_sockets.end(), 
 			[&, packet_count](std::unique_ptr<User>& cm) {
-				std::lock_guard lock(cm->mtx);
+				std::lock_guard lock(cm->mtx_client);
 				Client* c = &cm->client;
 
 				if (client->Closed()) [[unlikely]] {
@@ -163,19 +168,19 @@ void Room::threadSendMsg(User* clientMtx) {
 				if (rv.is_host_from_client) {
 					if (is_host_from_server) [[likely]] {
 						c->Send(rv.wanna_kick_off);
-						c->Send(rv.mute_all_once);
-						c->Send(rv.mute_all_keep);
+						//c->Send(rv.mute_all_once);
+						//c->Send(rv.mute_all_keep);
 					}
 					else {
 						c->Send(user::invalid_id);
-						c->Send(false);
-						c->Send(false);
+						//c->Send(false);
+						//c->Send(false);
 					}
 				}
-				c->Send(rv.share_audio);
-				if (rv.share_audio) {
-					c->Send(rv.audio_frames);
-				}
+				//c->Send(rv.share_audio);
+				//if (rv.share_audio) {
+				//	c->Send(rv.audio_frames);
+				//}
 				c->Send(rv.has_words_msg);
 				if (rv.has_words_msg) [[unlikely]] {
 					c->Send(rv.words_msg_target);
@@ -197,8 +202,40 @@ void Room::threadSendMsg(User* clientMtx) {
 		}
 	}
 
+	client_audio->Close();
 	println("closed client user_id: " << save_id);
 	m_cs_dead_threads.release();
+}
+
+void Room::threadSendAudio(User* clientMtx, std::atomic<bool>& closedSignalSent) {
+	Client* client = &clientMtx->client;
+	Client* client_audio = &clientMtx->client_audio;
+	struct {
+		user::id_t id{};
+		faudio_t faudio{};
+		std::vector<float> audio_frames{};
+	}rv{};
+	for (;;) {
+		if (client_audio->Closed()) [[unlikely]] { break; }
+		client_audio->ReceiveBy(rv.id);
+		client_audio->ReceiveBy(rv.faudio);
+		if (rv.faudio & faudio_share) {
+			client_audio->ReceiveBy(rv.audio_frames);
+		}
+		{
+			std::shared_lock lock(m_mtx_client_sockets);
+			std::for_each(std::execution::par, m_client_sockets.begin(), m_client_sockets.end(),
+			[&](std::unique_ptr<User>& cm) {
+				std::lock_guard lock(cm->mtx_audio);
+				auto* c = &cm->client_audio;
+				c->Send(rv.id);
+				c->Send(rv.faudio);
+				if (rv.faudio & faudio_share) {
+					c->Send(rv.audio_frames);
+				}
+			});
+		}
+	}
 }
 
 void Room::threadDeleteThread() {
@@ -251,16 +288,16 @@ Room::~Room() {
 	m_cs_dead_threads.release();
 }
 
-void Room::pushClient(Client c) {
+void Room::pushClient(Client c, Client c_audio) {
 	{
 		std::lock_guard lock(m_mtx_used);
 		m_flag |= f_used;
 	}
 	{
 		std::lock_guard lock(m_mtx_client_sockets);
-		std::unique_ptr<User> client = std::make_unique<User>(makeId(c.Id()), std::move(c));
-		auto ptr = client.get();
-		m_client_sockets.emplace_back(std::move(client));
+		std::unique_ptr<User> user = std::make_unique<User>(makeId(c.Id()), std::move(c), std::move(c_audio));
+		auto ptr = user.get();
+		m_client_sockets.emplace_back(std::move(user));
 		m_clients_threads.emplace_back(std::jthread(&Room::threadSendMsg, this, ptr));
 	}
 }

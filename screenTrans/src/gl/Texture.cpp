@@ -5,13 +5,23 @@
 #include <cassert>
 
 namespace gl {
+#ifdef TEXTURE2D_USE_DATA
 	Texture2D::Texture2D(int imgw, int imgh, std::vector<uint8_t> data, GpuTextureFmt gpu_fmt, TextureFmt fmt, int channels):
-		m_gpuFmt(gpu_fmt), m_fmt(fmt), m_data(std::move(data)),
+#else
+	Texture2D::Texture2D(int imgw, int imgh, const std::vector<uint8_t>& data, GpuTextureFmt gpu_fmt, TextureFmt fmt, int channels) :
+#endif
+		m_gpuFmt(gpu_fmt), m_fmt(fmt), 
+#ifdef TEXTURE2D_USE_DATA
+		m_data(std::move(data)),
+#endif
 		m_imgW(imgw),
 		m_imgH(imgh)
 	{
+#ifdef TEXTURE2D_USE_DATA
 		assert(m_data.size() % (m_imgW * m_imgH * channels) == 0);
-
+#else
+		assert(data.size() % (m_imgW * m_imgH * channels) == 0);
+#endif
 		GLCALL(glGenTextures(1, &m_texture));
 		GLCALL(glBindTexture(GL_TEXTURE_2D, m_texture));
 
@@ -20,7 +30,11 @@ namespace gl {
 		GLCALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST));
 		GLCALL(glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST));
 
+#ifdef TEXTURE2D_USE_DATA
 		GLCALL(glTexImage2D(GL_TEXTURE_2D, 0, (GLint)gpu_fmt, m_imgW, m_imgH, 0, (GLenum)fmt, GL_UNSIGNED_BYTE, m_data.data()));
+#else
+		GLCALL(glTexImage2D(GL_TEXTURE_2D, 0, (GLint)gpu_fmt, m_imgW, m_imgH, 0, (GLenum)fmt, GL_UNSIGNED_BYTE, data.data()));
+#endif
 		GLCALL(glGenerateMipmap(GL_TEXTURE_2D));
 	}
 
@@ -29,8 +43,10 @@ namespace gl {
 		m_fmt(other.m_fmt),
 		m_texture(other.m_texture),
 		m_imgW(other.m_imgW),
-		m_imgH(other.m_imgH),
-		m_data(std::move(other.m_data))
+		m_imgH(other.m_imgH)
+#ifdef TEXTURE2D_USE_DATA
+		,m_data(std::move(other.m_data))
+#endif
 	{
 		other.m_texture = 0;
 	}
@@ -41,8 +57,9 @@ namespace gl {
 		m_texture = (other.m_texture);
 		m_imgW = (other.m_imgW);
 		m_imgH = (other.m_imgH);
+#ifdef TEXTURE2D_USE_DATA
 		m_data = (std::move(other.m_data));
-
+#endif
 		other.m_texture = 0;
 	}
 
@@ -65,20 +82,36 @@ namespace gl {
 		GLCALL(glBindTexture(GL_TEXTURE_2D, m_texture));
 	}
 
+#ifdef TEXTURE2D_USE_DATA
 	void Texture2D::resetData(std::vector<uint8_t> data, int c) {
+#else
+	void Texture2D::resetData(const std::vector<uint8_t>& data, int c) {
+#endif
 		assert(currentTexture() == m_texture);
 		assert(data.size() == m_imgW * m_imgH * c);
+#ifdef TEXTURE2D_USE_DATA
 		m_data = std::move(data);
 		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_imgW, m_imgH, (GLenum)m_fmt, GL_UNSIGNED_BYTE, m_data.data());
+#else
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_imgW, m_imgH, (GLenum)m_fmt, GL_UNSIGNED_BYTE, data.data());
+#endif
 	}
 
+#ifdef TEXTURE2D_USE_DATA
 	void Texture2D::resize(int w, int h, int c) {
+#else
+	void Texture2D::resize(void* data, int w, int h, int c) {
+#endif
 		assert(currentTexture() == m_texture);
 		if (w == m_imgW && h == m_imgH) { return; }
 		m_imgW = w;
 		m_imgH = h;
+#ifdef TEXTURE2D_USE_DATA
 		m_data.resize(m_imgW * m_imgH * c);
 		GLCALL(glTexImage2D(GL_TEXTURE_2D, 0, (GLint)m_gpuFmt, m_imgW, m_imgH, 0, (GLenum)m_fmt, GL_UNSIGNED_BYTE, m_data.data()));
+#else 
+		GLCALL(glTexImage2D(GL_TEXTURE_2D, 0, (GLint)m_gpuFmt, m_imgW, m_imgH, 0, (GLenum)m_fmt, GL_UNSIGNED_BYTE, data));
+#endif
 		GLCALL(glGenerateMipmap(GL_TEXTURE_2D));
 	}
 

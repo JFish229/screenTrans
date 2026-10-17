@@ -1,10 +1,23 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Yuan Aowei
 #include <App.hpp>
+#include <thread>
+#include <chrono>
+using std::literals::chrono_literals::operator""ms;
+#include <util/Timer.hpp>
 
 void App::register_handle(std::optional<net::tcp::Client> c) {
 	if (!c) {
 		println("server accept error");
+		return;
+	}
+
+
+	Connect_t connect_type;
+	if (!c->ReceiveBy(connect_type)) { return; }
+
+	if (connect_type == connect_audio) {
+		pushAudioConnection(std::move(*c));
 		return;
 	}
 
@@ -15,9 +28,10 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 		enter_room,
 		interrupted,
 		//end,
-	}page{ Page::choose };
+	} page{ Page::choose };
 
-	c->Send(Room::makeId(c->Id()));
+	const user::id_t user_id = Room::makeId(c->Id());
+	c->Send(user_id);
 
 	while (1) {
 		switch (page) {
@@ -47,7 +61,10 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 			auto room = std::make_unique<Room>(passwd);
 			c->Send(room->id());
 			println("give id: " << room->id());
-			room->pushClient(std::move(*c));
+
+			auto audio_client = waitAudioConnection(user_id);
+			if(!audio_client) { page = Page::interrupted; break; }
+			room->pushClient(std::move(*c), std::move(*audio_client));
 			{
 				std::lock_guard lock(mtx_rooms);
 				rooms.push_back(std::move(room));
@@ -88,7 +105,9 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 					c->Send(true); // success
 				}
 
-				(*room)->pushClient(std::move(*c));
+				auto audio_client = waitAudioConnection(user_id);
+				if (!audio_client) { page = Page::interrupted; break; }
+				(*room)->pushClient(std::move(*c), std::move(*audio_client));
 				page = Page::listen;
 				break;
 			}
@@ -127,6 +146,29 @@ void App::check_empty_rooms() {
 		}
 		println("");
 	}
+}
+
+void App::pushAudioConnection(net::tcp::Client audioClient) {
+	struct {
+		user::id_t user_id;
+	} rv;
+	if (!audioClient.ReceiveBy(rv.user_id)) { return; }
+	std::lock_guard lock(mtx_audio_connections);
+	auto [itr, ok] = audio_connections.try_emplace(rv.user_id, std::move(audioClient));	
+	itr->second.Send(true);
+	assert(ok);
+}
+
+std::optional<net::tcp::Client> App::waitAudioConnection(user::id_t id) {
+	decltype(audio_connections)::iterator a_it;
+	{
+		std::lock_guard lock(mtx_audio_connections);
+		a_it = audio_connections.find(id);
+		if (a_it == audio_connections.end()) { return {}; }
+	}
+	auto res = std::move(a_it->second);
+	audio_connections.erase(id);
+	return res;
 }
 
 App::App() {
