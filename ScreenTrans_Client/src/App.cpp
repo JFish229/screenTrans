@@ -3,6 +3,8 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <App.hpp>
 
+#include <util/Timer.hpp>
+
 #ifndef NDEBUG
 #	include <filesystem>
 #endif//NDEBUG
@@ -18,6 +20,12 @@
 
 #include <atomic_imgui.hpp>
 
+#ifdef _WIN32
+#	include <timeapi.h>
+#	pragma comment(lib, "winmm.lib")
+#endif
+
+
 #if defined(_WIN32)
 #   define FONT_CJK_PATH "C:/Windows/Fonts/msyh.ttc"          // 微软雅黑
 #elif defined(__APPLE__)
@@ -27,6 +35,34 @@
 #else
 	static_assert(false, "unsupported platform font");
 #endif
+
+template <typename CB>
+[[nodiscard]] std::size_t cbPop(CB& cb, typename CB::pointer out, std::size_t count) {
+    using T = typename CB::value_type;
+    if (count == 0 || cb.empty()) return 0;
+    const std::size_t got = std::min<std::size_t>(count, cb.size());
+
+    if constexpr (std::is_trivially_copyable_v<T>) {
+        // 按字节复制，最快
+        auto a1 = cb.array_one();
+        auto a2 = cb.array_two();
+        const std::size_t n1 = std::min(got, a1.second);
+        std::memcpy(out, a1.first, n1 * sizeof(T));
+        if (n1 < got) {
+            std::memcpy(out + n1, a2.first, (got - n1) * sizeof(T));
+        }
+    }
+    else if constexpr (std::is_copy_assignable_v<T>) {
+        // 非平凡但可赋值：std::copy_n 会调 operator=
+        std::copy_n(cb.begin(), got, out);
+    }
+    else {
+		assert(false);
+	}
+
+    cb.erase_begin(got);
+    return got;
+}
 
 #if USE_IMGUI
 namespace ImGui {
@@ -169,11 +205,7 @@ bool App::clientClosed() {
 }
 
 void App::Receive() {
-	H264Decoder decoder;
-
-	audioPlayer.start();
 	DEFER{ [this]() {
-		audioPlayer.stop();
 		p_show.wait_threads.release();
 	}};
 
@@ -185,10 +217,10 @@ void App::Receive() {
 		uint32_t room_passwd{};
 		bool is_host_from_client{};
 		user::id_t wanna_kick_off{};
-		bool mute_all_once{};
-		bool mute_all_keep{};
-		bool share_audio{};
-		std::vector<float> audioFrames{};
+		//bool mute_all_once{};
+		//bool mute_all_keep{};
+		//bool share_audio{};
+		//std::vector<float> audioFrames{};
 		bool has_words_msg{};
 		user::id_t words_msg_target{};
 		char words_msg[words_msg_bytes];
@@ -225,16 +257,16 @@ void App::Receive() {
 		if (!client.ReceiveBy(rv.is_host_from_client)) [[unlikely]] { break; }
 		if (rv.is_host_from_client) {
 			client.ReceiveBy(rv.wanna_kick_off);
-			client.ReceiveBy(rv.mute_all_once);
-			client.ReceiveBy(rv.mute_all_keep);
+			//client.ReceiveBy(rv.mute_all_once);
+			//client.ReceiveBy(rv.mute_all_keep);
 		}
-		if (!client.ReceiveBy(rv.share_audio)) [[unlikely]] { break; }
-		if (rv.share_audio) {
-			client.ReceiveBy(rv.audioFrames);
-		}
-		else {
-			rv.audioFrames.resize(0);
-		}
+		//if (!client.ReceiveBy(rv.share_audio)) [[unlikely]] { break; }
+		//if (rv.share_audio) {
+			//client.ReceiveBy(rv.audioFrames);
+		//}
+		//else {
+			//rv.audioFrames.resize(0);
+		//}
 
 		if (!client.ReceiveBy(rv.has_words_msg)) [[unlikely]] { break; }
 		if (rv.has_words_msg) [[unlikely]] {
@@ -262,24 +294,24 @@ void App::Receive() {
 			if (rv.wanna_kick_off == get(logger.id)) [[unlikely]] {
 				p_show.setEnd(true, ShowPara::End::kickOff);
 			}
-			if (rv.mute_all_once && rv.id != logger.id) [[unlikely]] {
-				set(ui.send.share_audio, false);
-			}
-			if (rv.mute_all_keep && rv.id != logger.id) {
-				set(ui.send.share_audio, false);
-				set(ui.room_user.is_muted_keep, true);
-			}
-			else {
-				set(ui.room_user.is_muted_keep, false);
-			}
+			//if (rv.mute_all_once && rv.id != logger.id) [[unlikely]] {
+			//	set(ui.send.share_audio, false);
+			//}
+			//if (rv.mute_all_keep && rv.id != logger.id) {
+			//	set(ui.send.share_audio, false);
+			//	set(ui.room_user.is_muted_keep, true);
+			//}
+			//else {
+			//	set(ui.room_user.is_muted_keep, false);
+			//}
 		}
 		{
 			std::lock_guard lock(mtx_users);
 			auto [itr, first] = users.try_emplace(rv.id);
 			itr->second.name = rv.other_name;
-			auto& user = users[rv.id];
-			user.audioBuf.push(rv.audioFrames.begin(), rv.audioFrames.end());
-			set(user.share_audio, rv.share_audio);
+			auto& user = itr->second;
+			//user.audioBuf.push(rv.audioFrames.begin(), rv.audioFrames.end());
+			//set(user.share_audio, rv.share_audio);
 			set(user.is_host, rv.is_host_from_server);
 			set(user.share_video, rv.share_video);
 		}
@@ -291,36 +323,8 @@ void App::Receive() {
 			if (!client.ReceiveBy(rv.pk_size)) [[unlikely]] { break; }
 			for (int i = 0;i < rv.pk_size;++i) {
 				if (!client.ReceiveBy(rv.pk)) [[unlikely]] { break; }
-				auto frames = decoder.DecodePacket(rv.pk);
-				for (auto& frame : frames) {
-					total_video_frames_v1.push(std::move(frame));
-				}
-				//if (!frames.empty()) {
-				//	std::lock_guard<std::mutex> lock(mtx_video_frames);
-				//	size_t current_size = total_video_frames.size();
-				//	size_t new_count = frames.size();
-
-				//	if (current_size + new_count > MAX_VIDEO_FRAMES) {
-				//		while (!total_video_frames.empty())
-				//			total_video_frames.pop();
-
-				//		size_t keep = std::min(KEEP_FRAMES, new_count);
-				//		auto start = frames.end() - keep;
-				//		for (auto it = start; it != frames.end(); ++it) {
-				//			total_video_frames.push(std::move(*it));
-				//		}
-				//	}
-				//	else {
-				//		for (auto& frame : frames) {
-				//			total_video_frames.push(std::move(frame));
-				//		}
-				//	}
-				//}
+				recv_screen_packets.push(std::move(rv.pk));
 			}
-		}
-		else {
-			total_video_frames_v1.push({ 1,1,{0x33,0x33,0x33,0x00} });
-			//total_video_frames.push({ 1,1,{0x33,0x33,0x33,0x00} });
 		}
 	}
 }
@@ -329,35 +333,9 @@ void App::Send() {
 	DEFER{
 		[this]() {p_show.wait_threads.release();}
 	};
-	ScreenCapture capture;
-	if (!capture.Initialize()) {
-		std::cerr << "capture.Initialize() error\n";
-		exit(1);
-	}
-
-	while (!capture.CaptureFrame());
-	const int w = capture.Width() & ~1;
-	const int h = capture.Height() & ~1;
-	set(ui.video.encode.width, w);
-	set(ui.video.encode.height, h);
-	ui.video.encode.wait_wh.release();
-	ST::H264Encoder encoder(w, h, ui.video.encode.fps, ui.video.encode.bitrate);
-
-	audio::Capture ad_cpt{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, audio::bufSec };
-	ad_cpt.Start();
-
-	std::vector<float> buf_audio{};
 
 	auto last_time = std::chrono::steady_clock::now();
 	while(!p_show.ended() && !clientClosed()){
-		if (!capture.CaptureFrame()) {
-			continue;
-		}
-		auto& rgba = capture.GetBuffer();
-		if (rgba.empty()) {
-			continue;
-		}
-
 		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
 			std::chrono::duration<boost::float64_t>(1.0 / get(ui.send.fps))
 		);
@@ -365,20 +343,10 @@ void App::Send() {
 		std::this_thread::sleep_until(next_frame);
 		last_time = next_frame;
 
-		bool share_audio = get(ui.send.share_audio);
 		bool share_video = get(ui.send.share_video);
 
-		std::vector<std::vector<uint8_t>> packets;
-		{
-			std::lock_guard lock(ui.video.encode.mtx);
-			encoder.Reset(w, h, ui.video.encode.width, ui.video.encode.height, ui.video.encode.fps, ui.video.encode.bitrate);
-			set(ui.video.encode.width, encoder.Width());
-			set(ui.video.encode.height, encoder.Height());
-			if (share_video) {
-				packets = encoder.EncodeFrame(rgba);
-			}
-		}
-		int32_t pk_size = static_cast<int32_t>(packets.size());
+		std::vector<std::vector<uint8_t>> packets(send_screen_packets_count);
+		int32_t pk_size = static_cast<int32_t>(send_screen_packets.pop(packets.data(), send_screen_packets_count));
 
 		bool is_host_from_client = isHost<true>();
 		assert(get(logger.id) != user::invalid_id);
@@ -395,13 +363,9 @@ void App::Send() {
 			set(ui.room_user.host.wanna_kick_off, user::invalid_id);
 			client.Send(get(ui.room_user.host.transfer_host));
 			set(ui.room_user.host.transfer_host, user::invalid_id);
-			client.Send(get(ui.room_user.host.mute_all_once));
-			set(ui.room_user.host.mute_all_once, false);
-			client.Send(get(ui.room_user.host.mute_all_keep));
-		}
-		client.Send(share_audio);
-		if (share_audio) {
-			client.Send(ui.room_user.is_muted_keep ? std::vector<float>{} : std::move(ad_cpt.giveFrames(buf_audio)));//move
+			//client.Send(get(ui.room_user.host.mute_all_once));
+			//set(ui.room_user.host.mute_all_once, false);
+			//client.Send(get(ui.room_user.host.mute_all_keep));
 		}
 		bool has_words_msg;
 		{
@@ -429,8 +393,157 @@ void App::Send() {
 		client.Send(share_video);
 		if (share_video) {
 			client.Send(pk_size);
-			for (auto& pk : packets) {
-				client.Send(pk);
+			for (size_t i = 0;i < pk_size;++i) {
+				client.Send(packets[i]);
+			}
+		}
+	}
+}
+
+void App::audioSend(){
+	DEFER{
+		[this]() {p_show.wait_threads.release();}
+	};
+	audio::Capture ad_cpt{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, audio::bufSec };
+	ad_cpt.Start();
+	std::vector<float> buf_audio{};
+
+	auto last_time = std::chrono::steady_clock::now();
+	while (!p_show.ended() && !clientClosed()) {
+		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+			std::chrono::duration<boost::float64_t>(1.0 / (audio::sampleRate / audio::periodSizeInFrames))
+		);
+		auto next_frame = last_time + target_interval;
+		std::this_thread::sleep_until(next_frame);
+		last_time = next_frame;
+
+		client_audio.Send(get(logger.id));
+		faudio_t faudio{ 0 };
+		if (get(ui.send.share_audio)) { faudio |= faudio_share; }
+		if (isHost<true>()) { faudio |= faudio_is_host; }
+		if (get(ui.room_user.host.mute_all_once)) [[unlikely]] { faudio |= faudio_mute_all_once; }
+		if (get(ui.room_user.host.mute_all_keep)) { faudio |= faudio_mute_all_keep; }
+		set(ui.room_user.host.mute_all_once, false);
+
+		client_audio.Send(faudio);
+		if (faudio & faudio_share) {
+			client_audio.Send(ui.room_user.is_muted_keep ? std::vector<float>{} : std::move(ad_cpt.giveFrames(buf_audio)));//move
+		}
+	}
+}
+
+void App::audioRecv(){
+	DEFER{ [this]() {
+		audioPlayer.stop();
+		p_show.wait_threads.release();
+	}};
+	audioPlayer.start();
+
+
+	struct {
+		user::id_t id{};
+		faudio_t faudio{};
+		std::vector<float> audioFrames{};
+		void restore() {
+		
+		}
+	} rv{};
+
+	while (!p_show.ended() && !clientClosed()) {
+		client_audio.ReceiveBy(rv.id);
+		client_audio.ReceiveBy(rv.faudio);
+		if (rv.faudio & faudio_share) {
+			client_audio.ReceiveBy(rv.audioFrames);
+		}
+		else {
+			rv.audioFrames.resize(0);
+		}
+
+		if (rv.faudio & faudio_is_host) {
+			if ((rv.faudio & faudio_mute_all_once) && rv.id != logger.id) [[unlikely]] {
+				set(ui.send.share_audio, false);
+			}
+			if ((rv.faudio & faudio_mute_all_keep) && rv.id != logger.id) {
+				set(ui.send.share_audio, false);
+				set(ui.room_user.is_muted_keep, true);
+			}
+			else {
+				set(ui.room_user.is_muted_keep, false);
+			}
+		}
+		{
+			std::lock_guard lock(mtx_users);
+			auto [itr, first] = users.try_emplace(rv.id);
+			auto& user = itr->second;
+			user.audioBuf.insert(user.audioBuf.end(), rv.audioFrames.begin(), rv.audioFrames.end());
+			//user.audioBuf.push(rv.audioFrames.begin(), rv.audioFrames.end());
+			set(user.share_audio, rv.faudio & faudio_share);
+		}
+	}
+}
+
+void App::ScreenCaptureEncode() {
+	DEFER{
+		[this]() {p_show.wait_threads.release();}
+	};
+	ScreenCapture capture;
+	if (!capture.Initialize()) {
+		std::cerr << "capture.Initialize() error\n";
+		exit(1);
+	}
+
+	while (!capture.CaptureFrame());
+	const int w = capture.Width() & ~1;
+	const int h = capture.Height() & ~1;
+	set(ui.video.encode.width, w);
+	set(ui.video.encode.height, h);
+	ui.video.encode.wait_wh.release();
+	ST::H264Encoder encoder(w, h, ui.video.encode.fps, ui.video.encode.bitrate);
+
+	auto last_time = std::chrono::steady_clock::now();
+	while (!p_show.ended() && !clientClosed()) {
+		if (!capture.CaptureFrame()) {
+			continue;
+		}
+		auto& rgba = capture.GetBuffer();
+		if (rgba.empty()) {
+			continue;
+		}
+
+		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+			std::chrono::duration<boost::float64_t>(1.0 / get(ui.send.fps))
+		);
+		auto next_frame = last_time + target_interval;
+		std::this_thread::sleep_until(next_frame);
+		last_time = next_frame;
+
+
+		bool share_audio = get(ui.send.share_audio);
+		bool share_video = get(ui.send.share_video);
+
+		encoder.Reset(w, h, ui.video.encode.width, ui.video.encode.height, ui.video.encode.fps, ui.video.encode.bitrate);
+		set(ui.video.encode.width, encoder.Width());
+		set(ui.video.encode.height, encoder.Height());
+
+		auto pkts = encoder.EncodeFrame(rgba);
+		for(auto& pkt: pkts){
+			send_screen_packets.push(std::move(pkt));
+		}
+	}
+}
+
+void App::ScreenDecode() {
+	DEFER{ [this]() {
+		p_show.wait_threads.release();
+	} };
+	H264Decoder decoder;
+	std::vector<std::vector<uint8_t>> pkts(recv_screen_packets_count);
+	while (!p_show.ended() && !clientClosed()) {
+		const size_t pkts_count = recv_screen_packets.pop(pkts.data(), recv_screen_packets_count);
+		for (size_t i = 0;i < pkts_count;++i) {
+			auto frames = decoder.DecodePacket(pkts[i]);
+			for (auto& frame : frames) {
+				total_video_frames_v1.push(std::move(frame));
 			}
 		}
 	}
@@ -446,31 +559,40 @@ void App::audioMix()
 		[this]() { p_show.wait_threads.release(); }
 	};
 
-	const size_t samples =
-		audio::mixPeriods *
-		audio::periodSizeInFrames *
-		audio::channels;
+	//constexpr int sleep_ms = 10;
+	//constexpr int target_fps = 1000 / sleep_ms;
+	//const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+	//	std::chrono::duration<boost::float64_t>(1.0 / target_fps)
+	//);
 
-	std::vector<float> mixBuf(samples);
-	std::vector<float> getBuf(samples);
+	//constexpr size_t samples = sleep_ms * audio::sampleRate / 1000 * audio::channels;
 
-	while(!p_show.ended() && !clientClosed()) {
+	std::vector<float> mixBuf{};
+	std::vector<float> getBuf{};
 
-		std::this_thread::sleep_for(5ms);
+	util::Timer timer;
+
+	timer.restart();
+	while (!p_show.ended() && !clientClosed()) {
+		std::this_thread::sleep_for(50ms);
+
+		const int sleep_ms = static_cast<int>(timer.milliseconds());
+		timer.restart();
+		const size_t samples = sleep_ms * audio::sampleRate / 1000 * audio::channels;
+		mixBuf.resize(samples, 0);
+		getBuf.resize(samples, 0);
 
 		std::fill( mixBuf.begin(), mixBuf.end(), 0.0f );
 
 		size_t realSamples = 0;
 
-		/*
-		 * ========================================================
-		 * 多用户混音
-		 * ========================================================
-		 */
 		{
 			std::lock_guard lock{ mtx_users };
+			// 每轮 pop 前先修剪
+			const size_t target_watermark = audio::sampleRate * audio::channels / 5;   // 200ms
 			for (auto& user : users) {
-				const size_t thisSamples = user.second.audioBuf.pop( getBuf.data(), samples );
+				const size_t thisSamples = cbPop(user.second.audioBuf, getBuf.data(), samples);
+				//const size_t thisSamples = user.second.audioBuf.pop( getBuf.data(), samples );
 				realSamples = std::max( realSamples, thisSamples );
 				bool audio_playing{ false };
 				if (user.first != logger.id) {
@@ -489,16 +611,8 @@ void App::audioMix()
 			}
 		}
 
-		/*
-		 * 没有任何音频。
-		 */
 		if (realSamples == 0) { continue; }
 
-		/*
-		 * ========================================================
-		 * 防止混音溢出
-		 * ========================================================
-		 */
 		auto max_it =
 			std::ranges::max_element(
 				mixBuf.begin(),
@@ -553,7 +667,7 @@ void App::asrRecv()
 
 
 		int out_bytes = 0;
-		// println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<boost::float64_t>( audioBuf.size() ) / 16000.0 );
+		 //println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<boost::float64_t>( audioBuf.size() ) / 16000.0 );
 
 		//const char* str = plug.asr.transcribe( audioBuf.data(), static_cast<int>( audioBuf.size() ), &out_bytes );
 		const char* str = nullptr;
@@ -614,29 +728,36 @@ App::Page App::Show() {
 		itr->second.name = logger.name;
 	}
 
-	constexpr size_t thread_count = 4;
+	constexpr size_t thread_count = 8;
 
 	DEFER{ [this, thread_count]() {
 		client.Close();
+		client_audio.Close();
 		for (size_t i = 0;i < thread_count;++i) {
 			p_show.wait_threads.acquire();
 		}
 		restoreAfterShow();
 	}};
 
-	std::array<std::jthread, thread_count> threads{
+	std::jthread threads[] = {
 		std::jthread{ &App::audioMix, this },
 		std::jthread{ &App::Send, this },
 		std::jthread{ &App::Receive, this },
+		std::jthread{ &App::audioSend, this },
+		std::jthread{ &App::audioRecv, this },
 		std::jthread{ &App::asrRecv, this },
+		std::jthread{ &App::ScreenCaptureEncode, this },
+		std::jthread{ &App::ScreenDecode, this },
 	};
+
+	static_assert(thread_count == sizeof(threads) / sizeof(std::jthread));
 
 	ui.video.encode.wait_wh.acquire();
 
 	//assert(thread_count == threads.size());
 
 	glfwSetWindowTitle(window->m_get, ("client: " + logger.name).c_str());
-
+		
 	struct imgStruct {
 		float pos[3];
 		float texCoords[2];
@@ -668,6 +789,8 @@ App::Page App::Show() {
 		char rename[sizeof(p1.name)]{};
 		uint32_t room_passwd{ Room::invalid_passwd };
 	} mid;
+	ST::DecodedFrame decodedFrame;
+
 
 	auto last_time = std::chrono::steady_clock::now();
 	auto renderDealing = [&]() {
@@ -1018,27 +1141,32 @@ App::Page App::Show() {
 		std::this_thread::sleep_for(std::chrono::milliseconds(SLEEP_TIME));
 
 
-		ST::DecodedFrame frame;
+		if (!total_video_frames_v1.empty()) {
+			total_video_frames_v1.pop(decodedFrame);
+		}
+		//if (total_video_frames.empty()) { return; }
+		//frame = std::move(total_video_frames.front());
+		//total_video_frames.pop();
+
+		int width = decodedFrame.width;
+		int height = decodedFrame.height;
+		auto& data = decodedFrame.rgba;
+
+		assert(data.size() == width * height * 4);
+
+		bool share_video;
 		{
-			std::lock_guard<std::mutex> lock(mtx_video_frames);
-			if (total_video_frames_v1.empty()) { return; }
-			total_video_frames_v1.pop(frame);
-			//if (total_video_frames.empty()) { return; }
-			//frame = std::move(total_video_frames.front());
-			//total_video_frames.pop();
+			std::lock_guard lock(mtx_users);
+			share_video = users[get(ui.room_user.chosen_user)].share_video;
 		}
-
-		int width = frame.width;
-		int height = frame.height;
-		auto& data = frame.rgba;
-
-		if (data.size() != width * height * 4) {
-			system("pause");
-			return;
+		if (share_video) {
+			img.resize(nullptr, width, height, 4);
+			img.resetData(data, 4);
 		}
-
-		img.resize(width, height, 4);
-		img.resetData(data, 4);
+		else {
+			img.resize(nullptr, 1, 1, 4);
+			img.resetData({ 0,0,0,0 }, 4);
+		}
 	};
 	any_usage = &renderDealing;
 	using renderFuncType = decltype(renderDealing);
@@ -1222,9 +1350,11 @@ App::Page App::enterRoom() {
 App::Page App::connectToServer() {
 	logger.name = {};
 
+	user::id_t get_id;
 	bool first{ true };
 	loop {
 		client = net::tcp::Client{ net::tcp::Ip::v4 };
+		client_audio = net::tcp::Client{ net::tcp::Ip::v4 };
 		loop {
 			if (window->shouldClose()) { set(close_signal, true); return Page::Tmp; }
 			PageRenderGuard pageRenderGuard{this, "connect to server", 20 };
@@ -1238,7 +1368,16 @@ App::Page App::connectToServer() {
 			if (p1.port == p1.invalid_port)	{ ImGui::Text("%s: port invalid - should be a unsigned number not 0", p1.port); ok = false; }
 			if (ok && ImGui::Button("connect")) { break; }
 		}
-		if (client.ConnectTo(net::tcp::Ip::v4, p1.ipv4, p1.port)) {
+		bool sync_connection;
+		if (client.ConnectTo(net::tcp::Ip::v4, p1.ipv4, p1.port) &&
+			client.Send(connect_user) &&
+			client.ReceiveBy(get_id) &&
+
+			client_audio.ConnectTo(net::tcp::Ip::v4, p1.ipv4, p1.port) &&
+			client_audio.Send(connect_audio) &&
+			client_audio.Send(get_id) &&
+			client_audio.ReceiveBy(sync_connection)
+		) {
 			println(p1.ipv4);
 			println(p1.port);
 			println("connected to server successfully");
@@ -1250,9 +1389,8 @@ App::Page App::connectToServer() {
 		}
 	}
 	logger.name = p1.name;
-	net::socket_t get_id;
-	client.ReceiveBy(get_id);
-	set(logger.id, static_cast<user::id_t>(get_id));
+
+	set(logger.id, get_id);
 	println("id: " << logger.id);
 	println("socket: " << client.Id());
 	println("name: " << logger.name);
@@ -1278,6 +1416,12 @@ void App::run() {
 }
 
 App::App() {
+
+#ifdef _WIN32
+	timeBeginPeriod(1);   // App::App() 里，配合 App::~App() 的 timeEndPeriod(1)
+#endif
+
+
 #if USE_IMGUI
 	main_scale = ImGui_ImplGlfw_GetContentScaleForMonitor(glfwGetPrimaryMonitor()); // Valid on GLFW 3.3+ only
 	// Setup Dear ImGui context
@@ -1347,6 +1491,10 @@ App::~App() {
 #ifndef NDEBUG
 	println("end ok(press enter to finish)");
 	//(void)getchar();
+#endif
+
+#ifdef _WIN32
+	timeEndPeriod(1);   // App::App() 里，配合 App::~App() 的 timeEndPeriod(1)
 #endif
 }
 

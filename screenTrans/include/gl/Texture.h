@@ -80,6 +80,8 @@ namespace gl {
 
 	int currentTextureUnit();
 
+//#define TEXTURE2D_USE_DATA
+
 	class Texture2D {
 	private:
 		GpuTextureFmt m_gpuFmt;
@@ -87,18 +89,35 @@ namespace gl {
 		unsigned int m_texture = 0;
 		int m_imgW;
 		int m_imgH;
-		std::vector<uint8_t> m_data;
+#ifdef TEXTURE2D_USE_DATA
+		std::vector<uint8_t> m_data{};
+#endif
 	public:
+#ifdef TEXTURE2D_USE_DATA
 		Texture2D(int imgw, int imgh, std::vector<uint8_t> data, GpuTextureFmt gpu_fmt, TextureFmt fmt, int channels);
+#else
+		Texture2D(int imgw, int imgh, const std::vector<uint8_t>& data, GpuTextureFmt gpu_fmt, TextureFmt fmt, int channels);
+#endif
 		Texture2D(const Texture2D&) = delete;
 		Texture2D(Texture2D&& other) noexcept;
 		Texture2D& operator=(const Texture2D&) = delete;
 		void operator=(Texture2D&& other) noexcept;
 		~Texture2D();
 
+#ifdef TEXTURE2D_USE_DATA
 		std::vector<uint8_t>& data() { return m_data; }
+#endif
+#ifdef TEXTURE2D_USE_DATA
 		void resetData(std::vector<uint8_t> data, int c);
+#else
+		void resetData(const std::vector<uint8_t>& data, int c);
+#endif
+
+#ifdef TEXTURE2D_USE_DATA
 		void resize(int w, int h, int c);
+#else
+		void resize(void* data, int w, int h, int c);
+#endif
 		void unbind() const;
 		void bind() const;
 		void bindTo(int unit) const;

@@ -25,8 +25,8 @@ namespace ST {
         H264Decoder();
         ~H264Decoder() { Destroy(); }
 
-        std::vector<DecodedFrame> DecodePacket(const std::vector<uint8_t>& packet);
-        std::vector<DecodedFrame> Flush();
+        std::vector<DecodedFrame> DecodePacket(std::vector<uint8_t>& packet);
+        //std::vector<DecodedFrame> Flush();
 
     private:
         bool Initialize();

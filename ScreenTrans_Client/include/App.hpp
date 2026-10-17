@@ -43,6 +43,7 @@
 #include <chrono>
 #include <semaphore>
 using std::literals::chrono_literals::operator""ms;
+using std::literals::chrono_literals::operator""s;
 
 #include <boost/lockfree/spsc_queue.hpp>
 #include <boost/cstdfloat.hpp>
@@ -92,11 +93,11 @@ namespace video {
 namespace audio {
 	inline constexpr uint32_t sampleRate = 16'000;
 	inline constexpr uint32_t channels = 1;
-	inline constexpr uint32_t periodSizeInFrames = 1000;
+	inline constexpr uint32_t periodSizeInFrames = 160;
 	static_assert(sampleRate% periodSizeInFrames == 0);
 	inline constexpr boost::float64_t periodSec = static_cast<boost::float64_t>(periodSizeInFrames) / sampleRate;
-	inline constexpr int mixPeriods = 5;
-	inline constexpr int bufSec = 1;
+	//inline constexpr int mixPeriods = 1;
+	inline constexpr double bufSec = 1.0;
 }
 
 inline constexpr size_t words_msg_max_count = 128;
@@ -115,6 +116,9 @@ struct Defer {
 #define NAME(name) CONCAT(CONCAT(name##_, __LINE__), __)
 #define DEFER Defer NAME(defer)
 
+template <typename CB>
+[[nodiscard]] std::size_t cbPop(CB& cb, typename CB::pointer out, std::size_t count);
+
 class App {
 private:
 	static std::unique_ptr<gl::Window> makeWindow();
@@ -127,6 +131,10 @@ private:
 	void Receive();
 	/* send: id, name, is_host_from_client(, wanna_kick_off), audio_frames, pk_size, pk[n] */
 	void Send();
+	void audioSend();
+	void audioRecv();
+	void ScreenCaptureEncode();
+	void ScreenDecode();
 	void CameraCapture();
 	void audioMix();
 	void asrRecv();
@@ -226,13 +234,18 @@ private:
 	} logger;
 	Page page{ Page::connectToServer };
 
-	std::mutex mtx_video_frames;
+	//std::mutex mtx_video_frames;
 	std::mutex mtx_close;
 	std::mutex mtx_users;
 	std::mutex mtx_audioFramesLong;
 	std::mutex mtx_speechWords;
 
+	static inline constexpr size_t send_screen_packets_count = 4;
+	boost::lockfree::spsc_queue<std::vector<uint8_t>> send_screen_packets{ send_screen_packets_count };
+	static inline constexpr size_t recv_screen_packets_count = 4;
+	boost::lockfree::spsc_queue<std::vector<uint8_t>> recv_screen_packets{ recv_screen_packets_count };
 	boost::lockfree::spsc_queue<ST::DecodedFrame> total_video_frames_v1{ 4 };
+
 	boost::lockfree::spsc_queue<ST::DecodedFrame> total_camera_frames{ 4 };
 	boost::lockfree::spsc_queue<ST::DecodedFrame> local_camera_frames{ 4 };
 	//std::queue<ST::DecodedFrame> total_video_frames;
@@ -244,7 +257,8 @@ private:
 		static constexpr float audio_playing_least = 0.01f;
 		std::atomic<bool> audio_playing{ false };
 		std::string name;
-		boost::lockfree::spsc_queue<float> audioBuf{ audio::sampleRate * audio::channels * audio::bufSec };
+		//boost::lockfree::spsc_queue<float> audioBuf{ static_cast<size_t>(audio::sampleRate * audio::channels * audio::bufSec) };
+		boost::circular_buffer<float> audioBuf{ static_cast<size_t>(audio::sampleRate * audio::channels * audio::bufSec) };
 		struct {
 			//std::mutex mtx;
 			boost::circular_buffer<std::string> buf{ words_msg_max_count };
@@ -258,6 +272,7 @@ private:
 	audio::User audioUser{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, audio::bufSec };
 	audio::Player audioPlayer{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, &audioUser, audio::User::callback };
 	net::tcp::Client client{ net::tcp::Ip::v4 };
+	net::tcp::Client client_audio{ net::tcp::Ip::v4 };
 
 	using bool8_t = std::conditional_t<sizeof(bool) == 1, bool, uint8_t>;
 
@@ -305,7 +320,7 @@ private:
 		struct {
 			std::atomic<boost::float64_t> fps = 64;
 			struct {
-				std::mutex mtx;
+				//std::mutex mtx;
 				std::atomic<int> fps = 30;
 				std::atomic<int> bitrate = 4'000'000;
 				std::atomic<int> width{0};

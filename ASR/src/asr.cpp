@@ -119,7 +119,7 @@ const char* plugin_asr_transcribe(const float* pcm_data, int n_samples, int* out
     wparams.print_timestamps = false;
     wparams.translate = false;
     wparams.language = "zh";
-    wparams.n_threads = std::min(16, (int)std::thread::hardware_concurrency());
+    wparams.n_threads = std::min(16, 4);
     wparams.no_context = true;
     wparams.single_segment = true;
 

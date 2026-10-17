@@ -18,6 +18,7 @@
 #include <memory>
 #include <atomic>
 #include <unordered_map>
+#include <semaphore>
 
 #define println(x) std::cout<< x << "\n"
 #define print(x) std::cout<< x
@@ -28,12 +29,15 @@ private:
 	void register_handle(std::optional<net::tcp::Client> c);
 	// erase empty and unused rooms every 5 seconds
 	void check_empty_rooms();
-public:
+private:
 	net::InitGuard initGuard{};
 	std::mutex mtx_rooms;
 	// since in vector there is always copy or move and Room is so big that even move is slow(which we don't allow), so we use unique_ptr as a fast move container
 	std::vector<std::unique_ptr<Room>> rooms{};
-
+	std::mutex mtx_audio_connections;
+	std::unordered_map<user::id_t, net::tcp::Client> audio_connections{};
+	std::optional<net::tcp::Client> waitAudioConnection(user::id_t id);
+	void pushAudioConnection(net::tcp::Client audioClient);
 public:
 	App();
 	void run();
