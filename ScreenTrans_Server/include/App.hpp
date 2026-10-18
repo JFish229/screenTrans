@@ -5,6 +5,8 @@
 #include <net/tcp/Client.hpp>
 #include <st_signals.h>
 #include <Room.h>
+#include <util/Timer.hpp>
+#include <util/util.hpp>
 
 #include <thread>
 #include <vector>
@@ -33,9 +35,9 @@ private:
 	net::InitGuard initGuard{};
 	std::mutex mtx_rooms;
 	// since in vector there is always copy or move and Room is so big that even move is slow(which we don't allow), so we use unique_ptr as a fast move container
-	std::vector<std::unique_ptr<Room>> rooms{};
+	std::vector<std::shared_ptr<Room>> rooms{};
 	std::mutex mtx_audio_connections;
-	std::unordered_map<user::id_t, net::tcp::Client> audio_connections{};
+	std::unordered_map<user::id_t, std::optional<net::tcp::Client>> audio_connections{};
 	std::optional<net::tcp::Client> waitAudioConnection(user::id_t id);
 	void pushAudioConnection(net::tcp::Client audioClient);
 public:

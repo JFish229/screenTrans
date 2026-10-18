@@ -192,6 +192,7 @@
     <ClInclude Include="include\st_signals.h" />
     <ClInclude Include="include\util\Debug.hpp" />
     <ClInclude Include="include\util\Timer.hpp" />
+    <ClInclude Include="include\util\util.hpp" />
     <ClInclude Include="thirdparty\include\boost\boost\preprocessor\arithmetic.hpp" />
     <ClInclude Include="thirdparty\include\boost\boost\preprocessor\arithmetic\add.hpp" />
     <ClInclude Include="thirdparty\include\boost\boost\preprocessor\arithmetic\dec.hpp" />

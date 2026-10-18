@@ -667,7 +667,7 @@ void App::asrRecv()
 
 
 		int out_bytes = 0;
-		 //println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<boost::float64_t>( audioBuf.size() ) / 16000.0 );
+		 println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<boost::float64_t>( audioBuf.size() ) / 16000.0 );
 
 		//const char* str = plug.asr.transcribe( audioBuf.data(), static_cast<int>( audioBuf.size() ), &out_bytes );
 		const char* str = nullptr;
@@ -1304,6 +1304,9 @@ App::Page App::makeRoom() {
 		if (!client.ReceiveBy(room_id0)) {
 			return makeTmpServerStatusError();
 		}
+		if (room_id0 == Room::invalid_passwd) {
+			return makeTmp("audio connection error", "Audio connection error happened while making room. Please try reconnect", Page::connectToServer);
+		}
 		logger.room_id = room_id0;
 		return Page::Show;
 	}
@@ -1314,6 +1317,7 @@ App::Page App::enterRoom() {
 	logger.passwd = Room::invalid_passwd;
 	bool room_id_not_exist{ false };
 	bool passwd_wrong{ false };
+	bool room_cleared{ false };
 	for (;;) {
 		if (window->shouldClose()) { set(close_signal, true); return Page::Tmp; }
 		PageRenderGuard pageRenderGuard(this, "enter room", 20);
@@ -1327,6 +1331,7 @@ App::Page App::enterRoom() {
 		if (want_continue) { continue; }
 		if (room_id_not_exist)	{ ImGui::Text("room id not exist"); } 
 		if (passwd_wrong)		{ ImGui::Text("passwd wrong"); }
+		if (room_cleared)		{ ImGui::Text("others in the room all left while you're entering"); }
 		if (ImGui::Button("->")) {
 			client.Send(false);
 			client.Send(p3.room_id);
@@ -1339,6 +1344,14 @@ App::Page App::enterRoom() {
 			if (!client.ReceiveBy(passwd_ok))	{ return makeTmpServerStatusError(); }
 			if (!passwd_ok)						{ passwd_wrong = true; continue; }
 			else { passwd_wrong = false; }
+			bool sync_audio_connection;
+			if(!client_audio.ReceiveBy(sync_audio_connection)) {  
+				return makeTmp("audio connection error", "Audio connection error happened while entering room. Please try reconnect", Page::connectToServer);
+			}
+			bool enter_ok;
+			if (!client.ReceiveBy(enter_ok))	{ return makeTmpServerStatusError(); }
+			if (!enter_ok)						{ room_cleared = !enter_ok; continue; }
+			else { room_cleared = false; }
 			break;
 		}
 	}

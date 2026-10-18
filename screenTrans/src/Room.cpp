@@ -291,7 +291,8 @@ Room::~Room() {
 void Room::pushClient(Client c, Client c_audio) {
 	{
 		std::lock_guard lock(m_mtx_used);
-		m_flag |= f_used;
+		//m_flag |= f_used;
+		m_used.store(true, std::memory_order_release);
 	}
 	{
 		std::lock_guard lock(m_mtx_client_sockets);

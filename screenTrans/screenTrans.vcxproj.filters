@@ -1397,6 +1397,9 @@
     <ClInclude Include="include\util\Debug.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
+    <ClInclude Include="include\util\util.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="include\net\tcp\Client.inl">

@@ -30,15 +30,16 @@ private:
 	static inline std::mutex mtx_ids;
 	static inline std::vector<uint32_t> ids = {};
 private:
-	using Flag = uint8_t;
-	enum : Flag{
-		f_none = 0,
-		f_used = (Flag)1 << 0, // used to have at least one client
-	};
-	Flag m_flag = f_none;
+	//using Flag = uint8_t;
+	//enum : Flag{
+	//	f_none = 0,
+	//	f_used = (Flag)1 << 0, // used to have at least one client
+	//};
+	//Flag m_flag = f_none;
 	std::atomic<uint32_t> m_id = room::invalid_id;
 	std::atomic<net::socket_t> m_host_skt{ net::invalid_socket };
 	std::atomic<uint32_t> m_passwd{ invalid_passwd };
+	std::atomic<bool> m_used{ false };
 	std::counting_semaphore<> m_cs_dead_threads{0};
 	std::jthread m_delete_thread_thread;
 	std::shared_mutex m_mtx_client_sockets;
@@ -62,7 +63,8 @@ public:
 	Room(Room&&) noexcept = delete;
 	Room& operator=(const Room&) = delete;
 	Room& operator=(Room&&) noexcept = delete;
-	bool used() { std::lock_guard lock(m_mtx_used); return m_flag & f_used; }
+	//bool used() { std::lock_guard lock(m_mtx_used); return m_flag & f_used; }
+	bool used() { return m_used.load(std::memory_order_acquire); }
 	bool empty() { std::lock_guard lock(m_mtx_client_sockets); return m_client_sockets.size() == 0; }
 	uint32_t id() { return m_id.load(std::memory_order_acquire); }
 	uint32_t passwd() { return m_passwd.load(std::memory_order_acquire); }
