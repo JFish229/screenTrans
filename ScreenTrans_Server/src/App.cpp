@@ -4,7 +4,7 @@
 #include <thread>
 #include <chrono>
 using std::literals::chrono_literals::operator""ms;
-#include <util/Timer.hpp>
+using std::literals::chrono_literals::operator""s;
 
 void App::register_handle(std::optional<net::tcp::Client> c) {
 	if (!c) {
@@ -26,12 +26,13 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 		choose,
 		make_room,
 		enter_room,
-		interrupted,
+		interrupted, // client closed
 		//end,
 	} page{ Page::choose };
 
 	const user::id_t user_id = Room::makeId(c->Id());
 	c->Send(user_id);
+	bool audio_connection_consumed{ false };
 
 	while (1) {
 		switch (page) {
@@ -41,9 +42,9 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 		case Page::choose: {
 			bool pre{};
 			if (!c->ReceiveBy(pre))		{ page = Page::interrupted; break; }
-			if (pre)					{ page = Page::listen; break; }
+			if (pre)					{ page = Page::interrupted; break; }
 			Choice choice{};
-			if (!c->ReceiveBy(choice))	{ page = Page::listen; break; }
+			if (!c->ReceiveBy(choice))	{ page = Page::interrupted; break; }
 			else {
 				switch (choice) {
 				case choice_make_room: page = Page::make_room; break;
@@ -58,17 +59,25 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 			uint32_t passwd{};
 			if (!c->ReceiveBy(passwd))	{ page = Page::interrupted; break; }
 
-			auto room = std::make_unique<Room>(passwd);
+			std::shared_ptr<Room> room;
+
+			auto audio_client = waitAudioConnection(user_id);
+			audio_connection_consumed = true;
+			assert(audio_client);
+			if(audio_client->Closed()) {
+				c->Send(Room::invalid_passwd);
+				page = Page::interrupted; 
+				break; 
+			}
+			room = std::make_shared<Room>(passwd);
 			c->Send(room->id());
 			println("give id: " << room->id());
 
-			auto audio_client = waitAudioConnection(user_id);
-			if(!audio_client) { page = Page::interrupted; break; }
 			room->pushClient(std::move(*c), std::move(*audio_client));
 			{
 				std::lock_guard lock(mtx_rooms);
 				rooms.push_back(std::move(room));
-				std::sort(rooms.begin(), rooms.end(), [](std::unique_ptr<Room>& r1, std::unique_ptr<Room>& r2) {
+				std::sort(rooms.begin(), rooms.end(), [](std::shared_ptr<Room>& r1, std::shared_ptr<Room>& r2) {
 					return r1->id() < r2->id();
 					});
 			}
@@ -76,19 +85,27 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 		}break;
 		case Page::enter_room: {
 			// room id and passwd
-			bool enter_ok = true;
 			for (;;) {
 				bool pre{};
 				if (!c->ReceiveBy(pre)) { page = Page::interrupted; break; }
-				else if (pre)			{ page = Page::choose; break; }
+				else if (pre) { page = Page::choose; break; }
 				uint32_t id{}, passwd{};
-				if (!c->ReceiveBy(id))		{ page = Page::interrupted; break; }
-				if (!c->ReceiveBy(passwd))	{ page = Page::interrupted; break; }
+				if (!c->ReceiveBy(id)) { page = Page::interrupted; break; }
+				if (!c->ReceiveBy(passwd)) { page = Page::interrupted; break; }
 
-				// once client gets room, we can't it destruct in the middle
-				std::lock_guard lock(mtx_rooms);
-				auto room = std::lower_bound(rooms.begin(), rooms.end(), 0, [id](std::unique_ptr<Room>& r, int) { return r->id() < id; });
-				if (room == rooms.end() || (*room)->id() != id) {
+				std::shared_ptr<Room> room;
+				// once client gets room, we can't let it destruct in the middle
+				{
+					std::lock_guard lock(mtx_rooms);
+					auto room0 = std::lower_bound(rooms.begin(), rooms.end(), 0, [id](std::shared_ptr<Room>& r, int) { return r->id() < id; });
+					if (room0 == rooms.end() || (*room0)->id() != id) {
+						room = nullptr;
+					}
+					else {
+						room = *room0;
+					}
+				}
+				if (!room) {
 					c->Send(false);
 					continue;
 				}
@@ -96,8 +113,11 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 					c->Send(true);
 				}
 
-				if (!passwd) { page = Page::interrupted; break; }
-				if (passwd != (*room)->passwd()) {
+				if (!passwd) { 
+					page = Page::interrupted; 
+					break; 
+				}
+				if (passwd != room->passwd()) {
 					c->Send(false); // failed
 					continue;
 				}
@@ -106,15 +126,44 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 				}
 
 				auto audio_client = waitAudioConnection(user_id);
-				if (!audio_client) { page = Page::interrupted; break; }
-				(*room)->pushClient(std::move(*c), std::move(*audio_client));
+				audio_connection_consumed = true;
+				assert(audio_client);
+				if (
+					audio_client->Closed() || 
+					!audio_client->Send(true)					
+				) { 
+					page = Page::interrupted;
+					break; 
+				}
+
+				{
+					std::lock_guard lock(mtx_rooms);
+					if (room->empty()) [[unlikely]] {
+						c->Send(false); // others left while entering
+						continue;
+					}
+					else {
+						c->Send(true);
+					}
+					room->pushClient(std::move(*c), std::move(*audio_client));
+				}
 				page = Page::listen;
 				break;
 			}
 		}break;
 		case Page::interrupted: {
 			println("interrupted in the middle");
-			page = Page::listen;
+			std::lock_guard lock(mtx_audio_connections);
+			auto itr0 = audio_connections.find(user_id);
+			if (itr0 != audio_connections.end()) { // have pushed audio connection
+				audio_connections.erase(itr0);
+				return;
+			}
+			// haven't pushed audio connection and audio_client is gonna push audio connection
+			if (!audio_connection_consumed) {
+				audio_connections.try_emplace(user_id, std::nullopt);
+			}
+			return;
 		}break;
 		}
 	}
@@ -123,11 +172,11 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 // erase empty and unused rooms every 5 seconds
 void App::check_empty_rooms() {
 	for (;;) {
-		std::this_thread::sleep_for(std::chrono::seconds(5));
+		std::this_thread::sleep_for(5s);
 		std::vector<uint32_t> record;
 		{
 			std::lock_guard lock(mtx_rooms);
-			std::erase_if(rooms, [&record](std::unique_ptr<Room>& r) {
+			std::erase_if(rooms, [&record](std::shared_ptr<Room>& r) {
 				if (r->empty() && r->used()) {
 					record.push_back(r->id());
 					return true;
@@ -153,21 +202,31 @@ void App::pushAudioConnection(net::tcp::Client audioClient) {
 		user::id_t user_id;
 	} rv;
 	if (!audioClient.ReceiveBy(rv.user_id)) { return; }
-	std::lock_guard lock(mtx_audio_connections);
-	auto [itr, ok] = audio_connections.try_emplace(rv.user_id, std::move(audioClient));	
-	itr->second.Send(true);
-	assert(ok);
+	{
+		std::lock_guard lock(mtx_audio_connections);
+		auto itr0 = audio_connections.find(rv.user_id);
+		if (itr0 != audio_connections.end()) {
+			if (itr0->second == std::nullopt) { // signal from user client: audio connection should close
+				audio_connections.erase(itr0);
+				return;
+			}
+			else { // other user's audio connection, meaning that this user client has closed
+				return;
+			}
+		}
+		auto [itr, ok] = audio_connections.try_emplace(rv.user_id, std::move(audioClient));
+		if (!itr->second->Send(true)) {
+			itr->second->Close();
+		}
+	}
 }
 
 std::optional<net::tcp::Client> App::waitAudioConnection(user::id_t id) {
-	decltype(audio_connections)::iterator a_it;
-	{
-		std::lock_guard lock(mtx_audio_connections);
-		a_it = audio_connections.find(id);
-		if (a_it == audio_connections.end()) { return {}; }
-	}
+	std::lock_guard lock(mtx_audio_connections);
+	auto a_it = audio_connections.find(id);
+	if (a_it == audio_connections.end()) { return {}; }
 	auto res = std::move(a_it->second);
-	audio_connections.erase(id);
+	audio_connections.erase(a_it);
 	return res;
 }
 

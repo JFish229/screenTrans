@@ -27,6 +27,7 @@
 #include <ScreenCapture.h>
 #include <st_signals.h>
 #include <Room.h>
+#include <util/util.hpp>
 
 #include <plugin/Loader.hpp>
 #include <plugin/Asr.hpp>
@@ -101,20 +102,6 @@ namespace audio {
 }
 
 inline constexpr size_t words_msg_max_count = 128;
-
-template<typename Fn>
-struct Defer {
-	Fn m_fn;
-	Defer(Fn fn): m_fn(std::move(fn)){}
-	Defer(const Defer&) = delete;
-	Defer(Defer&&) = delete;
-	~Defer() { m_fn(); }
-};
-
-#define XCONCAT(x, y) x##y
-#define CONCAT(x, y) XCONCAT(x, y) 
-#define NAME(name) CONCAT(CONCAT(name##_, __LINE__), __)
-#define DEFER Defer NAME(defer)
 
 template <typename CB>
 [[nodiscard]] std::size_t cbPop(CB& cb, typename CB::pointer out, std::size_t count);
