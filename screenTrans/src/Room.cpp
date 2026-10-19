@@ -17,6 +17,7 @@
 #endif
 
 using net::tcp::Client;
+using net::End;
 
 //#define pv(x) std::cout<< #x << ": " << x << "\n"
 
@@ -54,6 +55,7 @@ void Room::threadSendMsg(User* clientMtx) {
 
 	user::id_t last_chosen_user = user::invalid_id;
 	struct {
+		bool little_end{};
 		user::id_t id{};
 		std::string name{};
 		bool is_host_from_client{};
@@ -82,6 +84,7 @@ void Room::threadSendMsg(User* clientMtx) {
 
 		int32_t packet_count{};
 
+		client->ReceiveBy(rv.little_end);
 		client->ReceiveBy(rv.id);
 		client->ReceiveBy(rv.name);
 		client->ReceiveBy(rv.is_host_from_client);
@@ -108,7 +111,7 @@ void Room::threadSendMsg(User* clientMtx) {
 				packet_count = rv.pk_size;
 				rv.packets.resize(std::max(rv.packets.size(), (size_t)packet_count));
 				for (int32_t i = 0;i < packet_count;++i) {
-					client->ReceiveBy(rv.packets[i]);
+					client->ReceiveBy(rv.packets[i], { End::native, End::native });
 				}
 			}
 		}
@@ -142,8 +145,9 @@ void Room::threadSendMsg(User* clientMtx) {
 				std::lock_guard lock(cm->mtx_client);
 				Client* c = &cm->client;
 
+				Signal signal{ rv.little_end ? signal_littleEnd : 0 };
 				if (client->Closed()) [[unlikely]] {
-					c->Send(signal_closed);
+					c->Send(signal |= signal_closed);
 					c->Send(save_id);
 					closedSignalSent.store(true, std::memory_order_release);
 					return;
@@ -155,8 +159,8 @@ void Room::threadSendMsg(User* clientMtx) {
 					auto choice = m_choices_of.find(c->Id());
 					choice_isnt_me = choice == m_choices_of.end() || choice->second != rv.id;
 				}
-				if (choice_isnt_me) { c->Send(signal_choiceNotMatch); }
-				else				{ c->Send(signal_none); }
+				if (choice_isnt_me) { c->Send(signal |= signal_choiceNotMatch); }
+				else				{ c->Send(signal |= signal_none); }
 
 				c->Send(rv.id);
 				c->Send(rv.name);
@@ -220,7 +224,7 @@ void Room::threadSendAudio(User* clientMtx, std::atomic<bool>& closedSignalSent)
 		client_audio->ReceiveBy(rv.id);
 		client_audio->ReceiveBy(rv.faudio);
 		if (rv.faudio & faudio_share) {
-			client_audio->ReceiveBy(rv.audio_frames);
+			client_audio->ReceiveBy(rv.audio_frames, { End::native, End::native });
 		}
 		{
 			std::shared_lock lock(m_mtx_client_sockets);
@@ -231,7 +235,8 @@ void Room::threadSendAudio(User* clientMtx, std::atomic<bool>& closedSignalSent)
 				c->Send(rv.id);
 				c->Send(rv.faudio);
 				if (rv.faudio & faudio_share) {
-					c->Send(rv.audio_frames);
+					//c->Send(rv.audio_frames);
+					c->Send(rv.audio_frames.data(), sizeof(rv.audio_frames[0]) * rv.audio_frames.size());
 				}
 			});
 		}

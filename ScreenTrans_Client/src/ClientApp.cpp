@@ -321,8 +321,12 @@ void ClientApp::Receive() {
 		// each packet
 		if (rv.share_video) {
 			if (!client.ReceiveBy(rv.pk_size)) [[unlikely]] { break; }
+			const net::EndSrcTar endSrcTar{
+				rv.signals & signal_littleEnd ? net::End::little : net::End::big, 
+				net::End::native
+			};
 			for (int i = 0;i < rv.pk_size;++i) {
-				if (!client.ReceiveBy(rv.pk)) [[unlikely]] { break; }
+				if (!client.ReceiveBy(rv.pk, endSrcTar)) [[unlikely]] { break; }
 				recv_screen_packets.push(std::move(rv.pk));
 			}
 		}
@@ -335,6 +339,9 @@ void ClientApp::Send() {
 	};
 
 	auto last_time = std::chrono::steady_clock::now();
+	util::Timer timer;
+	timer.restart();
+	double sum_time{};
 	while(!p_show.ended() && !clientClosed()){
 		const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
 			std::chrono::duration<boost::float64_t>(1.0 / get(ui.send.fps))
@@ -343,6 +350,17 @@ void ClientApp::Send() {
 		std::this_thread::sleep_until(next_frame);
 		last_time = next_frame;
 
+		{
+			const double sec = timer.seconds();
+			sum_time += sec;
+			if (sum_time > 0.4) {
+				set(ui.send.real_fps, 1 / sec);
+				sum_time = 0;
+			}
+		}
+
+		timer.restart();
+
 		bool share_video = get(ui.send.share_video);
 
 		std::vector<std::vector<uint8_t>> packets(send_screen_packets_count);
@@ -350,6 +368,7 @@ void ClientApp::Send() {
 
 		bool is_host_from_client = isHost<true>();
 		assert(get(logger.id) != user::invalid_id);
+		client.Send(net::End::native == net::End::little);
 		client.Send(get(logger.id));
 		{
 			std::lock_guard lock(logger.mtx_name);
@@ -394,7 +413,9 @@ void ClientApp::Send() {
 		if (share_video) {
 			client.Send(pk_size);
 			for (size_t i = 0;i < pk_size;++i) {
-				client.Send(packets[i]);
+				auto& packet = packets[i];
+				//client.Send(packet.data(), packet.size());
+				client.Send(packet);
 			}
 		}
 	}
@@ -419,6 +440,7 @@ void ClientApp::audioSend(){
 
 		client_audio.Send(get(logger.id));
 		faudio_t faudio{ 0 };
+		if (net::End::native == net::End::little) { faudio |= faudio_little_end; }
 		if (get(ui.send.share_audio)) { faudio |= faudio_share; }
 		if (isHost<true>()) { faudio |= faudio_is_host; }
 		if (get(ui.room_user.host.mute_all_once)) [[unlikely]] { faudio |= faudio_mute_all_once; }
@@ -427,7 +449,15 @@ void ClientApp::audioSend(){
 
 		client_audio.Send(faudio);
 		if (faudio & faudio_share) {
-			client_audio.Send(ui.room_user.is_muted_keep ? std::vector<float>{} : std::move(ad_cpt.giveFrames(buf_audio)));//move
+			if (ui.room_user.is_muted_keep) {
+				float tmp;
+				client_audio.Send(&tmp, 0);
+			}
+			else {
+				ad_cpt.giveFrames(buf_audio);
+				client_audio.Send(buf_audio.data(), sizeof(buf_audio[0]) * buf_audio.size());
+			}
+			//client_audio.Send(ui.room_user.is_muted_keep ? std::vector<float>{} : std::move(ad_cpt.giveFrames(buf_audio)));//move
 		}
 	}
 }
@@ -452,8 +482,14 @@ void ClientApp::audioRecv(){
 	while (!p_show.ended() && !clientClosed()) {
 		client_audio.ReceiveBy(rv.id);
 		client_audio.ReceiveBy(rv.faudio);
+		
+		const net::EndSrcTar endSrcTar{
+			rv.faudio & faudio_little_end ? net::End::little : net::End::big,
+			net::End::native
+		};
+
 		if (rv.faudio & faudio_share) {
-			client_audio.ReceiveBy(rv.audioFrames);
+			client_audio.ReceiveBy(rv.audioFrames, endSrcTar);
 		}
 		else {
 			rv.audioFrames.resize(0);
@@ -639,8 +675,10 @@ void ClientApp::audioMix()
 			}
 		}
 		{
+#if USE_ASR
 			std::lock_guard lock(mtx_audioFramesLong);
 			audioFramesLong.insert(audioFramesLong.end(), mixBuf.begin(), mixBuf.begin() + realSamples);
+#endif
 		}
 		audioUser.pushFrames(
 			mixBuf.data(),
@@ -669,8 +707,11 @@ void ClientApp::asrRecv()
 		int out_bytes = 0;
 		 println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<boost::float64_t>( audioBuf.size() ) / 16000.0 );
 
-		//const char* str = plug.asr.transcribe( audioBuf.data(), static_cast<int>( audioBuf.size() ), &out_bytes );
-		const char* str = nullptr;
+#if USE_ASR
+		 const char* str = plug.asr.transcribe( audioBuf.data(), static_cast<int>( audioBuf.size() ), &out_bytes );
+#else
+		 const char* str = nullptr;
+#endif
 		/*
 		 * ========================================================
 		 * 保存识别结果
@@ -832,6 +873,8 @@ ClientApp::Page ClientApp::Show() {
 		}
 		if (ImGui::TreeNode("message")) {
 			ImGui::PushIdGuard pushIdGuard(__LINE__);
+			// real_fps
+			ImGui::Text("real_fps: %.3f", get(ui.send.real_fps));
 			// fps
 			COMP_ATOMIC_T(ImGui::SliderScalar, "fps", ImGuiDataType_Double, ui.send.fps, &MIN_MAX_FPS, &MAX_MAX_FPS);
 			// share_video
@@ -1115,11 +1158,6 @@ ClientApp::Page ClientApp::Show() {
 				show_img_size.x = show_img_size.y * img_w_y;
 				offsetX = (winSize.x - show_img_size.x) / 2;
 			}
-			//ImVec2 img_pos = ImVec2(content_origin.x + offsetX, content_origin.y + offsetY);
-
-			//const float title_bar_h = 60.0f;
-			//offsetY += title_bar_h / 2;
-			//show_img_size.y -= title_bar_h;
 			ImGui::SetCursorPos(ImVec2(offsetX, offsetY));
 			ImGui::Image(img.id(), show_img_size);
 		}

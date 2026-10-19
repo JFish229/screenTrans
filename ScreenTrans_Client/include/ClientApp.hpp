@@ -7,6 +7,8 @@
 #define USE_IMGUI 1
 #define USE_IMGUI_VIEWPORT 1
 
+#define USE_ASR 0
+
 #if	USE_IMGUI
 #	include "imgui.h"
 #	include "imgui_impl_glfw.h"
@@ -293,6 +295,7 @@ private:
 		struct {
 			std::atomic<bool> share_audio{ false };
 			std::atomic<bool> share_video{ false };
+			std::atomic<double> real_fps{};
 			std::atomic<boost::float64_t> fps = 20;
 			std::atomic<user::id_t> words_msg_target{ user::public_target }; // invalid => public msg
 			struct {
