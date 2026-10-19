@@ -97,7 +97,7 @@ namespace tcp {
 	inline bool Client::Init(Ip ip)
 	{
 		skt = Socket{ socket(static_cast<ip_t>(ip), SOCK_STREAM, IPPROTO_TCP) };
-		if(skt.id() == invalid_socket) {
+		if(skt.id() == invalid_socket) [[unlikely]] {
 			NET_SOCKET_SET_ERROR("socket() failed with error code: " + std::to_string(last_socket_error()));
 			return false;
 		}
@@ -112,7 +112,7 @@ namespace tcp {
 	inline Client::Client(Ip ip_version):
 		skt{invalid_socket}
 	{
-		if (!Init(ip_version)) {
+		if (!Init(ip_version)) [[unlikely]] {
 			std::cerr << "Client init error" << std::endl;
 			system("pause");
 			exit(1);
@@ -127,7 +127,7 @@ namespace tcp {
 		target.sin_addr.s_addr = inet_addr(ip);
 
 		int res = connect(skt.id(), reinterpret_cast<sockaddr*>(&target), static_cast<socklen_t>(sizeof(target)));
-		if(res == socket_error) {
+		if(res == socket_error) [[unlikely]] {
 			NET_SOCKET_SET_ERROR("connect() failed with error code: " + std::to_string(last_socket_error()));
 			return false;
 		}
@@ -189,7 +189,7 @@ namespace tcp {
 			}
 			ret += static_cast<msg_size>(sent);
 		}
-		if (ret < 0) {
+		if (ret < 0) [[unlikely]] {
 			int code = last_socket_error();
 			NET_SOCKET_SET_ERROR("send() failed with error code: " + std::to_string(code));
 			if (Socket::CheckClosedByErrorCode(code)) {
@@ -197,7 +197,7 @@ namespace tcp {
 			}
 			return {};
 		}
-		else if (ret == 0 && len > 0) {
+		else if (ret == 0 && len > 0) [[unlikely]] {
 			skt.Close(); // server closed
 			return {};
 		}
@@ -245,7 +245,7 @@ namespace tcp {
 
 	inline bool Client::recv_msg(void* data, msg_size bytes) {
 		auto ret = recv_all(data, bytes);
-		if (!ret) { return {}; }
+		if (!ret) [[unlikely]] { return {}; }
 		return true;
 	}
 
@@ -258,7 +258,7 @@ namespace tcp {
 			NET_SOCKET_SET_ERROR("receive not match");
 			return false;
 		}
-		if (!recv_msg(&out, msg_bytes)) {
+		if (!recv_msg(&out, msg_bytes)) [[unlikely]] {
 			return false;
 		}
 		out = network_to_host(out);
@@ -270,16 +270,17 @@ namespace tcp {
 		if (!o_msg_bytes) { return false; }
 		msg_size msg_bytes = *o_msg_bytes;
 		out.resize(msg_bytes);
-		if (!recv_msg(out.data(), msg_bytes)) {
+		if (!recv_msg(out.data(), msg_bytes)) [[unlikely]] {
 			return false;
 		}
 		return true;
 	}
 
 	template<CIsVector Vec>
-	inline bool Client::ReceiveBy(Vec& out) {
+		requires CNumberType<typename Vec::value_type>
+	inline bool Client::ReceiveBy(Vec& out, EndSrcTar est) {
 		auto o_msg_bytes = recv_bytes();
-		if (!o_msg_bytes) { return false; }
+		if (!o_msg_bytes) [[unlikely]] { return false; }
 		msg_size msg_bytes = *o_msg_bytes;
 		using elem_t = typename Vec::value_type;
 		static_assert(!std::same_as<elem_t, bool>);
@@ -288,21 +289,23 @@ namespace tcp {
 			return false;
 		}
 		out.resize(msg_bytes / sizeof(elem_t));
-		if (!recv_msg(out.data(), msg_bytes)) {
+		if (!recv_msg(out.data(), msg_bytes)) [[unlikely]] {
 			return false;
 		}
 		if constexpr (sizeof(elem_t) > 1) {
-			std::ranges::for_each(out, [](elem_t& e) { e = network_to_host(e); });
+			if (est.src != est.tar) {
+				std::ranges::for_each(out, [](elem_t& e) { e = byteswap(e); });
+			}
 		}
 		return true;
 	}
 
 	inline bool Client::ReceiveBy(void* buf, size_t bytes) {
 		auto o_msg_bytes = recv_bytes();
-		if (!o_msg_bytes) { return false; }
+		if (!o_msg_bytes) [[unlikely]] { return false; }
 		const msg_size msg_bytes = *o_msg_bytes;
 		if (msg_bytes != bytes) [[unlikely]] { return false; }
-		if (!recv_msg(buf, msg_bytes)) { return false; }
+		if (!recv_msg(buf, msg_bytes)) [[unlikely]] { return false; }
 		return true;
 	}
 
@@ -336,16 +339,16 @@ namespace tcp {
 	}
 
 	//auto hton, so data inside will be changed, so copy or move
-	template<CIsVector vec>
-		requires CNumberType<typename vec::value_type>
-	inline bool Client::Send(vec data) {
-		using elem_t = typename vec::value_type;
-		static_assert(!std::same_as<elem_t, bool>);
-		std::for_each(data.begin(), data.end(), [](elem_t& elem) { elem = host_to_network(elem); });
-		const size_t bytes = sizeof(elem_t) * data.size();
-		assert(std::in_range<msg_size>(bytes));
-		return Send(data.data(), bytes);
-	}
+	//template<CIsVector vec>
+	//	requires CNumberType<typename vec::value_type>
+	//inline bool Client::Send(vec data) {
+	//	using elem_t = typename vec::value_type;
+	//	static_assert(!std::same_as<elem_t, bool>);
+	//	std::for_each(data.begin(), data.end(), [](elem_t& elem) { elem = host_to_network(elem); });
+	//	const size_t bytes = sizeof(elem_t) * data.size();
+	//	assert(std::in_range<msg_size>(bytes));
+	//	return Send(data.data(), bytes);
+	//}
 
 	template<CNumberType T>
 	inline bool Client::Send(const T data) {
