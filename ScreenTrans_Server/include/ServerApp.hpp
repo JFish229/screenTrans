@@ -26,7 +26,7 @@
 #define print(x) std::cout<< x
 //#define pv(x) std::cout<< #x << ": " << x << "\n"
 
-class App {
+class ServerApp {
 private:
 	void register_handle(std::optional<net::tcp::Client> c);
 	// erase empty and unused rooms every 5 seconds
@@ -41,6 +41,6 @@ private:
 	std::optional<net::tcp::Client> waitAudioConnection(user::id_t id);
 	void pushAudioConnection(net::tcp::Client audioClient);
 public:
-	App();
+	ServerApp();
 	void run();
 };

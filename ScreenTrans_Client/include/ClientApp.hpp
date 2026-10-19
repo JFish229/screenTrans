@@ -106,7 +106,7 @@ inline constexpr size_t words_msg_max_count = 128;
 template <typename CB>
 [[nodiscard]] std::size_t cbPop(CB& cb, typename CB::pointer out, std::size_t count);
 
-class App {
+class ClientApp {
 private:
 	static std::unique_ptr<gl::Window> makeWindow();
 private:
@@ -131,8 +131,8 @@ private:
 	void pageRenderBegin(const char* title, int sleepTime);
 	void pageRenderEnd();
 	struct PageRenderGuard {
-		App* p;
-		PageRenderGuard(App* self, const char* title, int sleepTime) : p{ self } { p->pageRenderBegin(title, sleepTime); }
+		ClientApp* p;
+		PageRenderGuard(ClientApp* self, const char* title, int sleepTime) : p{ self } { p->pageRenderBegin(title, sleepTime); }
 		~PageRenderGuard() { p->pageRenderEnd(); }
 	};
 	friend struct PageRenderGuard;
@@ -341,7 +341,7 @@ private:
 		} asr;
 	} plug;
 public:
-	App();
-	~App();
+	ClientApp();
+	~ClientApp();
 	void run();
 };

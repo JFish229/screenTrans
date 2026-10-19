@@ -1,7 +1,7 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Yuan Aowei
 #define _CRT_SECURE_NO_WARNINGS
-#include <App.hpp>
+#include <ClientApp.hpp>
 
 #include <util/Timer.hpp>
 
@@ -113,7 +113,7 @@ namespace ImGui {
 }
 #endif
 
-std::unique_ptr<gl::Window> App::makeWindow() {
+std::unique_ptr<gl::Window> ClientApp::makeWindow() {
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
@@ -128,7 +128,7 @@ std::unique_ptr<gl::Window> App::makeWindow() {
 	return res;
 }
 
-void App::storeUiState() {
+void ClientApp::storeUiState() {
 	std::FILE* const file = std::fopen("FlexMeet.ini", "wb");
 	DEFER([file]() { std::fclose(file); });
 	assert(file);
@@ -157,7 +157,7 @@ void App::storeUiState() {
 	std::fwrite(&buf_ui, sizeof(buf_ui), 1, file);
 }
 
-void App::loadUiState() {
+void ClientApp::loadUiState() {
 	std::FILE* const file = std::fopen("FlexMeet.ini", "rb");
 	DEFER([file]() { if (file) { std::fclose(file); }});
 	if (!file) { return; }
@@ -189,7 +189,7 @@ void App::loadUiState() {
 }
 
 template<bool lock_users>
-bool App::isHost() {
+bool ClientApp::isHost() {
 	if constexpr (lock_users) {
 		std::lock_guard lock(mtx_users);
 		return get(users[get(logger.id)].is_host);
@@ -199,12 +199,12 @@ bool App::isHost() {
 	}
 }
 
-bool App::clientClosed() {
+bool ClientApp::clientClosed() {
 	std::lock_guard lock(mtx_close);
 	return client.Closed();
 }
 
-void App::Receive() {
+void ClientApp::Receive() {
 	DEFER{ [this]() {
 		p_show.wait_threads.release();
 	}};
@@ -329,7 +329,7 @@ void App::Receive() {
 	}
 }
 
-void App::Send() {
+void ClientApp::Send() {
 	DEFER{
 		[this]() {p_show.wait_threads.release();}
 	};
@@ -400,7 +400,7 @@ void App::Send() {
 	}
 }
 
-void App::audioSend(){
+void ClientApp::audioSend(){
 	DEFER{
 		[this]() {p_show.wait_threads.release();}
 	};
@@ -432,7 +432,7 @@ void App::audioSend(){
 	}
 }
 
-void App::audioRecv(){
+void ClientApp::audioRecv(){
 	DEFER{ [this]() {
 		audioPlayer.stop();
 		p_show.wait_threads.release();
@@ -482,7 +482,7 @@ void App::audioRecv(){
 	}
 }
 
-void App::ScreenCaptureEncode() {
+void ClientApp::ScreenCaptureEncode() {
 	DEFER{
 		[this]() {p_show.wait_threads.release();}
 	};
@@ -532,7 +532,7 @@ void App::ScreenCaptureEncode() {
 	}
 }
 
-void App::ScreenDecode() {
+void ClientApp::ScreenDecode() {
 	DEFER{ [this]() {
 		p_show.wait_threads.release();
 	} };
@@ -549,11 +549,11 @@ void App::ScreenDecode() {
 	}
 }
 
-void App::CameraCapture() {
+void ClientApp::CameraCapture() {
 
 }
 
-void App::audioMix()
+void ClientApp::audioMix()
 {
 	DEFER{
 		[this]() { p_show.wait_threads.release(); }
@@ -649,7 +649,7 @@ void App::audioMix()
 	}
 }
 
-void App::asrRecv()
+void ClientApp::asrRecv()
 {
 	DEFER{
 		[this]() {p_show.wait_threads.release();}
@@ -694,32 +694,32 @@ void App::asrRecv()
 	}
 }
 
-void App::ShowPara::setEnd(bool ended, End showEnd) {
+void ClientApp::ShowPara::setEnd(bool ended, End showEnd) {
 	set(m_ended, ended);
 	m_showEnd = showEnd;
 }
 
-void App::ShowPara::restore() {
+void ClientApp::ShowPara::restore() {
 	set(m_ended, false);
 	m_showEnd = End::Default;
 }
 
-void App::restoreAfterShow() {
+void ClientApp::restoreAfterShow() {
 	p_show.restore();
 	users.clear();
 	glfwSetWindowUserPointer(window->m_get, this);
 	glfwSetWindowPosCallback(window->m_get, [](GLFWwindow* window, int xpos, int ypos) {
-		auto user = static_cast<App*>(glfwGetWindowUserPointer(window));
+		auto user = static_cast<ClientApp*>(glfwGetWindowUserPointer(window));
 		user->window->updatePos({ xpos, ypos });
 		});
 	glfwSetFramebufferSizeCallback(window->m_get, [](GLFWwindow* window, int width, int height) {
-		auto user = static_cast<App*>(glfwGetWindowUserPointer(window));
+		auto user = static_cast<ClientApp*>(glfwGetWindowUserPointer(window));
 		glViewport(0, 0, width, height);
 		user->window->setViewport({ 0,0,width, height });
 		});
 }
 
-App::Page App::Show() {
+ClientApp::Page ClientApp::Show() {
 
 	set(ui.room_user.chosen_user, get(logger.id));
 	{
@@ -740,14 +740,14 @@ App::Page App::Show() {
 	}};
 
 	std::jthread threads[] = {
-		std::jthread{ &App::audioMix, this },
-		std::jthread{ &App::Send, this },
-		std::jthread{ &App::Receive, this },
-		std::jthread{ &App::audioSend, this },
-		std::jthread{ &App::audioRecv, this },
-		std::jthread{ &App::asrRecv, this },
-		std::jthread{ &App::ScreenCaptureEncode, this },
-		std::jthread{ &App::ScreenDecode, this },
+		std::jthread{ &ClientApp::audioMix, this },
+		std::jthread{ &ClientApp::Send, this },
+		std::jthread{ &ClientApp::Receive, this },
+		std::jthread{ &ClientApp::audioSend, this },
+		std::jthread{ &ClientApp::audioRecv, this },
+		std::jthread{ &ClientApp::asrRecv, this },
+		std::jthread{ &ClientApp::ScreenCaptureEncode, this },
+		std::jthread{ &ClientApp::ScreenDecode, this },
 	};
 
 	static_assert(thread_count == sizeof(threads) / sizeof(std::jthread));
@@ -965,14 +965,14 @@ App::Page App::Show() {
 				if (ImGui::TreeNode("target", mid.name_buf)) {
 					const bool is_host = isHost<false>();
 					if (ImGui::BeginTable("##target_users", is_host ? 6 : 4, ImGuiTableFlags_SizingFixedFit)) {
+						ImGui::TableSetupColumn("target");
 						ImGui::TableSetupColumn("video");
 						ImGui::TableSetupColumn("audio");
+						ImGui::TableSetupColumn("aloud");
 						if (is_host) {
 							ImGui::TableSetupColumn("kick_off");
 							ImGui::TableSetupColumn("transfer_host");
 						}
-						ImGui::TableSetupColumn("target");
-						ImGui::TableSetupColumn("##audio_playing");
 						ImGui::TableHeadersRow();
 						for (auto& user : users) {
 							ImGui::PushU64Guard pushU64Guard(user.first);
@@ -984,6 +984,12 @@ App::Page App::Show() {
 								memcpy(mid.name_buf + name_len, &host_signal, sizeof(host_signal));
 								name_buf_size += sizeof(host_signal);
 							}
+
+							// select user
+							ImGui::TableNextColumn();
+							if (ImGui::Selectable(mid.name_buf)) {
+								set(ui.room_user.chosen_user, user.first);
+							}
 							// share_video
 							bool v = get(user.second.share_video);
 							ImGui::TableNextColumn();
@@ -992,27 +998,6 @@ App::Page App::Show() {
 							v = get(user.second.share_audio);
 							ImGui::TableNextColumn();
 							ImGui::Checkbox("##audio", &v);
-							// kick off
-							if (is_host) {
-								ImGui::TableNextColumn();
-								if (!user.second.is_host) {
-									if (ImGui::Button("kick_off")) {
-										set(ui.room_user.host.wanna_kick_off, user.first);
-									}
-								}
-								else {
-									ImGui::Button("(host)");
-								}
-								ImGui::TableNextColumn();
-								if (ImGui::Button("transfer")) {
-									set(ui.room_user.host.transfer_host, user.first);
-								}
-							}
-							// select user
-							ImGui::TableNextColumn();
-							if (ImGui::Selectable(mid.name_buf)) {
-								set(ui.room_user.chosen_user, user.first);
-							}
 							// audio_playing
 							constexpr const char audio_playing[] = ">))";
 							constexpr const char no_audio_playing[sizeof(audio_playing)] = "___";
@@ -1022,6 +1007,24 @@ App::Page App::Show() {
 							}
 							else {
 								ImGui::Text(no_audio_playing);
+							}
+
+							if (is_host) {
+								ImGui::TableNextColumn();
+								// kick off
+								if (!user.second.is_host) {
+									if (ImGui::Button("kick_off")) {
+										set(ui.room_user.host.wanna_kick_off, user.first);
+									}
+								}
+								else {
+									ImGui::Button("(host)");
+								}
+								// transfer
+								ImGui::TableNextColumn();
+								if (ImGui::Button("transfer")) {
+									set(ui.room_user.host.transfer_host, user.first);
+								}
 							}
 						}
 						ImGui::EndTable();
@@ -1091,7 +1094,7 @@ App::Page App::Show() {
 		style->Colors[ImGuiCol_WindowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // Alpha = 0
 		ImGui::Begin("main");
 		{
-			const ImVec2 winSize = ImGui::GetWindowSize();
+			const ImVec2 winSize = ImGui::GetContentRegionAvail();
 			const ImVec2 content_origin = ImGui::GetCursorScreenPos();
 			const auto imgSize = img.imgSize();
 			ImVec2 show_img_size;
@@ -1114,6 +1117,9 @@ App::Page App::Show() {
 			}
 			//ImVec2 img_pos = ImVec2(content_origin.x + offsetX, content_origin.y + offsetY);
 
+			//const float title_bar_h = 60.0f;
+			//offsetY += title_bar_h / 2;
+			//show_img_size.y -= title_bar_h;
 			ImGui::SetCursorPos(ImVec2(offsetX, offsetY));
 			ImGui::Image(img.id(), show_img_size);
 		}
@@ -1172,13 +1178,13 @@ App::Page App::Show() {
 	using renderFuncType = decltype(renderDealing);
 	glfwSetWindowUserPointer(window->m_get, this);
 	glfwSetWindowPosCallback(window->m_get, [](GLFWwindow* window, int xpos, int ypos) {
-		auto user = static_cast<App*>(glfwGetWindowUserPointer(window));
+		auto user = static_cast<ClientApp*>(glfwGetWindowUserPointer(window));
 		user->window->updatePos({ xpos, ypos });
 		auto renderDealing = *static_cast<renderFuncType*>(user->any_usage);
 		renderDealing();
 		});
 	glfwSetFramebufferSizeCallback(window->m_get, [](GLFWwindow* window, int width, int height) {
-		auto user = static_cast<App*>(glfwGetWindowUserPointer(window));
+		auto user = static_cast<ClientApp*>(glfwGetWindowUserPointer(window));
 		glViewport(0, 0, width, height);
 		user->window->setViewport({ 0,0,width, height });
 		auto renderDealing = *static_cast<renderFuncType*>(user->any_usage);
@@ -1211,7 +1217,7 @@ App::Page App::Show() {
 	return Page::Tmp;
 }
 
-App::Page App::Tmp() {
+ClientApp::Page ClientApp::Tmp() {
 	for (;;) {
 		if (window->shouldClose()) { set(close_signal, true); return Page::Tmp; }
 		PageRenderGuard pageRenderGuard{ this, p_tmp.title.c_str(), 20};
@@ -1221,14 +1227,14 @@ App::Page App::Tmp() {
 	return p_tmp.back;
 }
 
-App::Page App::makeTmp(std::string title, std::string content, Page back) {
+ClientApp::Page ClientApp::makeTmp(std::string title, std::string content, Page back) {
 	p_tmp.title = std::move(title);
 	p_tmp.content = std::move(content);
 	p_tmp.back = back;
 	return Page::Tmp;
 }
 
-void App::pageRenderBegin(const char* title, int sleepTime) {
+void ClientApp::pageRenderBegin(const char* title, int sleepTime) {
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleepTime));
 	glfwPollEvents();
 #if USE_IMGUI
@@ -1247,7 +1253,7 @@ void App::pageRenderBegin(const char* title, int sleepTime) {
 #endif
 }
 
-void App::pageRenderEnd() {
+void ClientApp::pageRenderEnd() {
 #if USE_IMGUI
 	ImGui::End();// settings
 	ImGui::End();//docking end
@@ -1264,7 +1270,7 @@ void App::pageRenderEnd() {
 	window->swapBuffers();
 }
 
-App::Page App::chooseMode() {
+ClientApp::Page ClientApp::chooseMode() {
 	for (;;) {
 		if (window->shouldClose()) { set(close_signal, true); return Page::Tmp; }
 		PageRenderGuard pageRenderGuard{ this, "choose mode", 20 };
@@ -1283,7 +1289,7 @@ App::Page App::chooseMode() {
 	return Page::Tmp;
 }
 
-App::Page App::makeRoom() {
+ClientApp::Page ClientApp::makeRoom() {
 	logger.room_id = room::invalid_id;
 	logger.passwd = Room::invalid_passwd;
 	while (1) {
@@ -1312,7 +1318,7 @@ App::Page App::makeRoom() {
 	}
 }
 
-App::Page App::enterRoom() {
+ClientApp::Page ClientApp::enterRoom() {
 	logger.room_id = room::invalid_id;
 	logger.passwd = Room::invalid_passwd;
 	bool room_id_not_exist{ false };
@@ -1344,10 +1350,10 @@ App::Page App::enterRoom() {
 			if (!client.ReceiveBy(passwd_ok))	{ return makeTmpServerStatusError(); }
 			if (!passwd_ok)						{ passwd_wrong = true; continue; }
 			else { passwd_wrong = false; }
-			bool sync_audio_connection;
-			if(!client_audio.ReceiveBy(sync_audio_connection)) {  
-				return makeTmp("audio connection error", "Audio connection error happened while entering room. Please try reconnect", Page::connectToServer);
-			}
+			//bool sync_audio_connection;
+			//if(!client_audio.ReceiveBy(sync_audio_connection)) {  
+			//	return makeTmp("audio connection error", "Audio connection error happened while entering room. Please try reconnect", Page::connectToServer);
+			//}
 			bool enter_ok;
 			if (!client.ReceiveBy(enter_ok))	{ return makeTmpServerStatusError(); }
 			if (!enter_ok)						{ room_cleared = !enter_ok; continue; }
@@ -1360,7 +1366,7 @@ App::Page App::enterRoom() {
 	return Page::Show;
 }
 
-App::Page App::connectToServer() {
+ClientApp::Page ClientApp::connectToServer() {
 	logger.name = {};
 
 	user::id_t get_id;
@@ -1389,7 +1395,8 @@ App::Page App::connectToServer() {
 			client_audio.ConnectTo(net::tcp::Ip::v4, p1.ipv4, p1.port) &&
 			client_audio.Send(connect_audio) &&
 			client_audio.Send(get_id) &&
-			client_audio.ReceiveBy(sync_connection)
+			client_audio.ReceiveBy(sync_connection) &&
+			client.Send(sync_connection)
 		) {
 			println(p1.ipv4);
 			println(p1.port);
@@ -1410,7 +1417,7 @@ App::Page App::connectToServer() {
 	return Page::chooseMode;
 }
 
-void App::run() {
+void ClientApp::run() {
 #ifdef NDEBUG
 	av_log_set_level(AV_LOG_ERROR); // ffmpeg log
 #endif//NDEBUG
@@ -1428,10 +1435,10 @@ void App::run() {
 
 }
 
-App::App() {
+ClientApp::ClientApp() {
 
 #ifdef _WIN32
-	timeBeginPeriod(1);   // App::App() 里，配合 App::~App() 的 timeEndPeriod(1)
+	timeBeginPeriod(1);   // ClientApp::App() 里，配合 ClientApp::~App() 的 timeEndPeriod(1)
 #endif
 
 
@@ -1487,7 +1494,7 @@ App::App() {
 	loadUiState();
 }
 
-App::~App() {
+ClientApp::~ClientApp() {
 	storeUiState();
 
 	plug.asr.free();
@@ -1507,11 +1514,11 @@ App::~App() {
 #endif
 
 #ifdef _WIN32
-	timeEndPeriod(1);   // App::App() 里，配合 App::~App() 的 timeEndPeriod(1)
+	timeEndPeriod(1);   // ClientApp::App() 里，配合 ClientApp::~App() 的 timeEndPeriod(1)
 #endif
 }
 
 int main() {
-	auto app = std::make_unique<App>();
+	auto app = std::make_unique<ClientApp>();
 	app->run();
 }
