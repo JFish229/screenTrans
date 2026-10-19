@@ -15,11 +15,14 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\stream_api.cpp" />
     <ClCompile Include="src\asr.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\model_file.hpp" />
+    <ClInclude Include="src\stream_engine.hpp" />
     <ClInclude Include="include\plugin\asr.h">
       <Filter>头文件</Filter>
     </ClInclude>

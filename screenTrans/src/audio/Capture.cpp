@@ -120,7 +120,9 @@ namespace audio {
         if (!self || !input || !self->m_running.load(std::memory_order_relaxed)) { return; }
         self->m_activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
         const float* pcm = static_cast<const float*>(input);
-        self->m_buf.push(pcm, frameCount * self->m_channels);
+        const size_t requested = static_cast<size_t>(frameCount) * self->m_channels;
+        const size_t accepted = self->m_buf.push(pcm, requested);
+        self->m_droppedSamples.fetch_add(requested - accepted, std::memory_order_relaxed);
         self->m_activeCallbacks.fetch_sub(1, std::memory_order_acq_rel);
     }
 

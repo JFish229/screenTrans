@@ -1,7 +1,11 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Yuan Aowei
 #define _CRT_SECURE_NO_WARNINGS
+#include <filesystem>
+#include <deque>
+#include <cstdlib>
 #include <App.hpp>
+#include <AsrAudio.hpp>
 
 #include <util/Timer.hpp>
 
@@ -407,6 +411,7 @@ void App::audioSend(){
 	audio::Capture ad_cpt{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, audio::bufSec };
 	ad_cpt.Start();
 	std::vector<float> buf_audio{};
+    asr_audio::CaptureGate captureGate;
 
 	auto last_time = std::chrono::steady_clock::now();
 	while (!p_show.ended() && !clientClosed()) {
@@ -417,7 +422,23 @@ void App::audioSend(){
 		std::this_thread::sleep_until(next_frame);
 		last_time = next_frame;
 
-		client_audio.Send(get(logger.id));
+        // Always drain, even while muted, before any potentially blocking send.
+        ad_cpt.giveFrames(buf_audio);
+        if (const auto dropped = ad_cpt.TakeDroppedSamples()) {
+            buf_audio.clear(); asrDiscontinuity.store(true);
+            std::cerr << "Capture overrun: " << dropped << " samples dropped\n";
+        }
+        const bool sharing = get(ui.send.share_audio) && !get(ui.room_user.is_muted_keep);
+        const bool changed = captureGate.filter(buf_audio, sharing);
+        if (plug.asr.stream) {
+            std::lock_guard lock(mtx_asrLocal);
+            if (!sharing || changed) asrLocalAudio.clear();
+            if (buf_audio.size() > asrLocalAudio.capacity() - asrLocalAudio.size()) {
+                asrDiscontinuity.store(true);
+            }
+            asrLocalAudio.insert(asrLocalAudio.end(), buf_audio.begin(), buf_audio.end());
+        }
+        client_audio.Send(get(logger.id));
 		faudio_t faudio{ 0 };
 		if (get(ui.send.share_audio)) { faudio |= faudio_share; }
 		if (isHost<true>()) { faudio |= faudio_is_host; }
@@ -427,7 +448,7 @@ void App::audioSend(){
 
 		client_audio.Send(faudio);
 		if (faudio & faudio_share) {
-			client_audio.Send(ui.room_user.is_muted_keep ? std::vector<float>{} : std::move(ad_cpt.giveFrames(buf_audio)));//move
+			client_audio.Send(buf_audio);
 		}
 	}
 }
@@ -553,145 +574,104 @@ void App::CameraCapture() {
 
 }
 
-void App::audioMix()
-{
-	DEFER{
-		[this]() { p_show.wait_threads.release(); }
-	};
-
-	//constexpr int sleep_ms = 10;
-	//constexpr int target_fps = 1000 / sleep_ms;
-	//const auto target_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-	//	std::chrono::duration<boost::float64_t>(1.0 / target_fps)
-	//);
-
-	//constexpr size_t samples = sleep_ms * audio::sampleRate / 1000 * audio::channels;
-
-	std::vector<float> mixBuf{};
-	std::vector<float> getBuf{};
-
-	util::Timer timer;
-
-	timer.restart();
-	while (!p_show.ended() && !clientClosed()) {
-		std::this_thread::sleep_for(50ms);
-
-		const int sleep_ms = static_cast<int>(timer.milliseconds());
-		timer.restart();
-		const size_t samples = sleep_ms * audio::sampleRate / 1000 * audio::channels;
-		mixBuf.resize(samples, 0);
-		getBuf.resize(samples, 0);
-
-		std::fill( mixBuf.begin(), mixBuf.end(), 0.0f );
-
-		size_t realSamples = 0;
-
-		{
-			std::lock_guard lock{ mtx_users };
-			// 每轮 pop 前先修剪
-			const size_t target_watermark = audio::sampleRate * audio::channels / 5;   // 200ms
-			for (auto& user : users) {
-				const size_t thisSamples = cbPop(user.second.audioBuf, getBuf.data(), samples);
-				//const size_t thisSamples = user.second.audioBuf.pop( getBuf.data(), samples );
-				realSamples = std::max( realSamples, thisSamples );
-				bool audio_playing{ false };
-				if (user.first != logger.id) {
-					for (size_t i = 0; i < thisSamples; ++i) {
-						audio_playing |= std::abs(getBuf[i]) > User::audio_playing_least;
-						mixBuf[i] += getBuf[i];
-					}
-				}
-				// no self audio
-				else {
-					for (size_t i = 0; i < thisSamples; ++i) {
-						audio_playing |= std::abs(getBuf[i]) > User::audio_playing_least;
-					}
-				}
-				set(user.second.audio_playing, audio_playing);
-			}
-		}
-
-		if (realSamples == 0) { continue; }
-
-		auto max_it =
-			std::ranges::max_element(
-				mixBuf.begin(),
-				mixBuf.begin() + realSamples,
-				[](float v1, float v2) {
-					return std::abs(v1) <
-						std::abs(v2);
-				}
-			);
-
-		if ( max_it != mixBuf.begin() + realSamples) {
-			const float maxVal =
-				std::abs(*max_it);
-
-			if (maxVal > 1.0f) {
-
-				std::ranges::for_each(
-					mixBuf.begin(),
-					mixBuf.begin() + realSamples,
-					[maxVal](float& v) {
-						v /= maxVal;
-					}
-				);
-			}
-		}
-		{
-			std::lock_guard lock(mtx_audioFramesLong);
-			audioFramesLong.insert(audioFramesLong.end(), mixBuf.begin(), mixBuf.begin() + realSamples);
-		}
-		audioUser.pushFrames(
-			mixBuf.data(),
-			realSamples
-		);
-	}
+void App::audioMix() {
+    DEFER{ [this]() { p_show.wait_threads.release(); } };
+    constexpr size_t samples = audio::sampleRate / 50; // fixed 20 ms timeline
+    std::vector<float> playback(samples), recognition(samples), scratch(samples);
+    auto next = std::chrono::steady_clock::now();
+    while (!p_show.ended() && !clientClosed()) {
+        next += 20ms;
+        std::this_thread::sleep_until(next);
+        if (std::chrono::steady_clock::now() - next > 200ms) {
+            next = std::chrono::steady_clock::now();
+            asrDiscontinuity.store(true);
+        }
+        std::fill(playback.begin(), playback.end(), 0.0f);
+        {
+            std::lock_guard lock(mtx_users);
+            for (auto& [id, user] : users) {
+                // Bound jitter latency; make any dropped timeline explicit to ASR.
+                if (user.audioBuf.size() > audio::sampleRate / 5) {
+                    user.audioBuf.erase_begin(user.audioBuf.size() - audio::sampleRate / 5);
+                    if (id != get(logger.id)) asrDiscontinuity.store(true);
+                }
+                const auto n = cbPop(user.audioBuf, scratch.data(), samples);
+                bool playing = false;
+                for (size_t i = 0; i < n; ++i) {
+                    playing |= std::abs(scratch[i]) > User::audio_playing_least;
+                    // Server echoes self. Local capture already feeds ASR directly.
+                }
+                asr_audio::add_remote(playback, std::span<const float>(scratch.data(), n), id == get(logger.id));
+                set(user.audio_playing, playing);
+            }
+        }
+        recognition = playback;
+        if (plug.asr.stream) {
+            std::lock_guard lock(mtx_asrLocal);
+            const auto n = cbPop(asrLocalAudio, scratch.data(), samples);
+            asr_audio::add(recognition, std::span<const float>(scratch.data(), n));
+        }
+        asr_audio::normalize(playback); asr_audio::normalize(recognition);
+        audioUser.pushFrames(playback.data(), playback.size());
+        // Push silence too: VAD must see the pause even when packets stop arriving.
+        if (plug.asr.stream) {
+            const int status = plug.asr.push(plug.asr.stream, recognition.data(), static_cast<uint32_t>(recognition.size()));
+            if (status < 0 && status != PLUGIN_ASR_CLOSED) {
+                std::cerr << "ASR push failed: " << status << '\n';
+                asrDiscontinuity.store(true);
+            }
+        }
+    }
 }
 
-void App::asrRecv()
-{
-	DEFER{
-		[this]() {p_show.wait_threads.release();}
-	};
-	std::vector<float> audioBuf;
-	while(!p_show.ended() && !clientClosed()) {
-		std::this_thread::sleep_for(200ms);
-
-		{
-			std::lock_guard lock(mtx_audioFramesLong);
-			audioBuf.resize(audioFramesLong.size());
-			std::copy(audioFramesLong.begin(), audioFramesLong.end(), audioBuf.begin());
-		}
-		if (audioBuf.empty()) { continue; }
-
-
-		int out_bytes = 0;
-		 println( "asr.transcribe begin, " << "samples = " << audioBuf.size() << ", seconds = " << static_cast<boost::float64_t>( audioBuf.size() ) / 16000.0 );
-
-		//const char* str = plug.asr.transcribe( audioBuf.data(), static_cast<int>( audioBuf.size() ), &out_bytes );
-		const char* str = nullptr;
-		/*
-		 * ========================================================
-		 * 保存识别结果
-		 * ========================================================
-		 */
-		if ( str ) {
-			printf("got it\n");
-			{
-				std::lock_guard lock(mtx_audioFramesLong);
-				audioFramesLong.clear();
-			}
-			{
-				std::lock_guard lock(mtx_speechWords);
-				speechWords.assign(str, out_bytes);
-				printf("get: %s\n", speechWords.c_str());
-			}
-		} else if(speechWords.size() > audio::sampleRate * audio::channels * 20){
-			printf("not yet\n");
-			speechWords.clear();
-		}
-	}
+void App::asrRecv() {
+    DEFER{ [this]() { p_show.wait_threads.release(); } };
+    if (!plug.asr.stream) return;
+    std::deque<std::string> confirmed;
+    std::string draft;
+    uint64_t draftId = 0;
+    std::vector<char> text(4096);
+    while (!p_show.ended() && !clientClosed()) {
+        if (asrDiscontinuity.exchange(false)) {
+            plug.asr.reset(plug.asr.stream);
+            draft.clear();
+            std::cerr << "ASR: input discontinuity; stream reset\n";
+        }
+        for (;;) {
+            plugin_asr_result result{}; result.struct_size = sizeof(result);
+            int status = plug.asr.poll(plug.asr.stream, &result, text.data(), static_cast<uint32_t>(text.size()));
+            if (status == PLUGIN_ASR_BUFFER_SMALL) { text.resize(result.text_bytes); continue; }
+            if (status != PLUGIN_ASR_EVENT) break;
+            std::string value(text.data());
+            if (result.type == PLUGIN_ASR_PARTIAL) {
+                draftId = result.utterance_id; draft = std::move(value);
+            } else if (result.type == PLUGIN_ASR_FINAL) {
+                if (draftId == result.utterance_id) draft.clear();
+                if (!value.empty()) confirmed.push_back(std::move(value));
+                while (confirmed.size() > 32) confirmed.pop_front();
+            } else if (result.type == PLUGIN_ASR_GAP || result.type == PLUGIN_ASR_ERROR) {
+                draft.clear();
+                std::cerr << "ASR: " << value << '\n';
+                std::lock_guard lock(mtx_speechWords);
+                asrStatus = result.type == PLUGIN_ASR_ERROR ? "Subtitles unavailable; rejoin to retry." : "Audio interrupted; subtitles resumed.";
+            }
+            if (result.type == PLUGIN_ASR_PARTIAL || result.type == PLUGIN_ASR_FINAL) {
+                std::clog << "ASR event=" << result.type << " id=" << result.utterance_id
+                          << " revision=" << result.revision << " queue_ms=" << result.queue_ms
+                          << " inference_ms=" << result.inference_ms << '\n';
+                std::lock_guard lock(mtx_speechWords); asrStatus.clear();
+            }
+        }
+        {
+            std::lock_guard lock(mtx_speechWords);
+            speechWords.clear();
+            for (const auto& sentence : confirmed) { speechWords += sentence; speechWords += '\n'; }
+            speechWords += draft;
+        }
+        std::this_thread::sleep_for(10ms);
+    }
+    // Meeting exit cancels, rather than publishing late results into another room.
+    plug.asr.reset(plug.asr.stream);
 }
 
 void App::ShowPara::setEnd(bool ended, End showEnd) {
@@ -721,6 +701,10 @@ void App::restoreAfterShow() {
 
 App::Page App::Show() {
 
+    if (plug.asr.stream) plug.asr.reset(plug.asr.stream);
+    { std::lock_guard lock(mtx_asrLocal); asrLocalAudio.clear(); }
+    { std::lock_guard lock(mtx_speechWords); speechWords.clear(); if (plug.asr.stream) asrStatus.clear(); }
+    asrDiscontinuity.store(false);
 	set(ui.room_user.chosen_user, get(logger.id));
 	{
 		std::lock_guard lock2{ mtx_users };
@@ -730,14 +714,6 @@ App::Page App::Show() {
 
 	constexpr size_t thread_count = 8;
 
-	DEFER{ [this, thread_count]() {
-		client.Close();
-		client_audio.Close();
-		for (size_t i = 0;i < thread_count;++i) {
-			p_show.wait_threads.acquire();
-		}
-		restoreAfterShow();
-	}};
 
 	std::jthread threads[] = {
 		std::jthread{ &App::audioMix, this },
@@ -751,6 +727,19 @@ App::Page App::Show() {
 	};
 
 	static_assert(thread_count == sizeof(threads) / sizeof(std::jthread));
+
+    // Close sockets before jthread destructors try to join blocking receivers.
+	DEFER{ [this, thread_count, &threads]() {
+		p_show.setEnd(true, p_show.showEnd());
+		if (plug.asr.stream) plug.asr.reset(plug.asr.stream);
+		client.Close();
+		client_audio.Close();
+		for (auto& thread : threads) if (thread.joinable()) thread.join();
+		for (size_t i = 0;i < thread_count;++i) {
+			p_show.wait_threads.acquire();
+		}
+		restoreAfterShow();
+	}};
 
 	ui.video.encode.wait_wh.acquire();
 
@@ -1077,6 +1066,7 @@ App::Page App::Show() {
 			{
 				std::lock_guard lock(mtx_speechWords);
 				ImGui::TextUnformatted(speechWords.c_str());
+                if (!asrStatus.empty()) ImGui::TextWrapped("%s", asrStatus.c_str());
 			}
 			ImGui::PopTextWrapPos();
 			ImGui::EndChild();
@@ -1474,14 +1464,46 @@ App::App() {
 	ImGui_ImplOpenGL3_Init("#version 330");
 #endif
 
-	bool ret{};
-	ret = plug.asr.loader.load("plugin/plugin_ASR.dll");
-	assert(ret);
-	plug.asr.loader.get(plug.asr.init, plugin::name::asrInit);
-	plug.asr.loader.get(plug.asr.transcribe, plugin::name::asrTranscribe);
-	plug.asr.loader.get(plug.asr.free, plugin::name::asrFree);
-	ret = plug.asr.init("plugin/ggml-tiny.bin") == 0;
-	assert(ret);
+    // Resolve plugin assets relative to the executable, independent of VS cwd.
+    wchar_t executable[32768]{};
+    GetModuleFileNameW(nullptr, executable, 32768);
+    const auto assets = std::filesystem::path(executable).parent_path() / "plugin";
+    const auto utf8 = [](const std::filesystem::path& p) {
+        auto bytes = p.u8string(); return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    };
+    const auto setting = [](const char* key, const std::string& fallback) {
+        char* value = nullptr; size_t n = 0;
+        _dupenv_s(&value, &n, key);
+        std::string result = value && *value ? value : fallback;
+        free(value); return result;
+    };
+    const auto dll = utf8(assets / "plugin_ASR.dll");
+    bool loaded = plug.asr.loader.load(dll.c_str());
+    if (loaded) {
+        loaded = plug.asr.loader.get(plug.asr.defaults, plugin::name::asrDefaults)
+            && plug.asr.loader.get(plug.asr.create, plugin::name::asrCreate)
+            && plug.asr.loader.get(plug.asr.push, plugin::name::asrPush)
+            && plug.asr.loader.get(plug.asr.poll, plugin::name::asrPoll)
+            && plug.asr.loader.get(plug.asr.flush, plugin::name::asrFlush)
+            && plug.asr.loader.get(plug.asr.reset, plugin::name::asrReset)
+            && plug.asr.loader.get(plug.asr.destroy, plugin::name::asrDestroy);
+    }
+    if (loaded) {
+        plugin_asr_config config{}; plug.asr.defaults(&config);
+        const auto model = setting("FLEXMEET_ASR_MODEL", utf8(assets / "ggml-base.bin"));
+        const auto vad = setting("FLEXMEET_ASR_VAD", utf8(assets / "ggml-silero-v6.2.0.bin"));
+        config.model_path = model.c_str(); config.vad_model_path = vad.c_str();
+        config.n_threads = std::clamp(atoi(setting("FLEXMEET_ASR_THREADS", std::to_string(config.n_threads)).c_str()), 1, 64);
+        config.use_gpu = setting("FLEXMEET_ASR_GPU", "1") != "0";
+        char error[1024]{};
+        if (plug.asr.create(&config, &plug.asr.stream, error, sizeof(error)) != PLUGIN_ASR_OK) {
+            asrStatus = "Subtitles unavailable: check model files and ASR startup log.";
+            std::cerr << "ASR initialization: " << error << "\nmodel: " << model << "\nVAD: " << vad << '\n';
+        }
+    } else {
+        asrStatus = "Subtitles unavailable: ASR plugin missing or incompatible.";
+        std::cerr << "ASR: cannot load streaming exports from " << dll << '\n';
+    }
 
 
 	loadUiState();
@@ -1490,7 +1512,7 @@ App::App() {
 App::~App() {
 	storeUiState();
 
-	plug.asr.free();
+    if (plug.asr.stream) plug.asr.destroy(plug.asr.stream);
 
 #if USE_IMGUI
 

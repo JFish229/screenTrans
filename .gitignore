@@ -6,3 +6,7 @@
 /ScreenTrans_Server/x64/
 /ASR/x64/
 /ScreenTrans_Client/plugin/
+/ASR/.cache/
+/ASR/build/
+/ASR/models/
+__pycache__/

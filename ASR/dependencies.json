@@ -1,0 +1,24 @@
+{
+  "whisper_cpp": {
+    "repository": "https://github.com/ggml-org/whisper.cpp",
+    "commit": "6e4ab854f67f743900934a703d5603419384c961",
+    "archive_sha256": "777504793d609419aea6121b5865702b22755c54b82f9c22c6e4973ce19019ae",
+    "version_reported": "1.9.4-dev"
+  },
+  "models": [
+    {
+      "file": "ggml-base.bin",
+      "repository": "ggerganov/whisper.cpp",
+      "revision": "5359861c739e955e79d9a303bcbc70fb988958b1",
+      "bytes": 147951465,
+      "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"
+    },
+    {
+      "file": "ggml-silero-v6.2.0.bin",
+      "repository": "ggml-org/whisper-vad",
+      "revision": "9ffd54a1e1ee413ddf265af9913beaf518d1639b",
+      "bytes": 885098,
+      "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
+    }
+  ]
+}

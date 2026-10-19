@@ -224,7 +224,7 @@ private:
 	//std::mutex mtx_video_frames;
 	std::mutex mtx_close;
 	std::mutex mtx_users;
-	std::mutex mtx_audioFramesLong;
+	std::mutex mtx_asrLocal;
 	std::mutex mtx_speechWords;
 
 	static inline constexpr size_t send_screen_packets_count = 4;
@@ -252,7 +252,9 @@ private:
 		} total_words_msg;
 	};
 	std::unordered_map < user::id_t, User > users; // init with self
-	std::vector<float> audioFramesLong{};
+	boost::circular_buffer<float> asrLocalAudio{ audio::sampleRate / 5 };
+    std::atomic<bool> asrDiscontinuity{false};
+    std::string asrStatus;
 	std::string speechWords;
 
 
@@ -335,9 +337,18 @@ private:
 	struct {
 		struct {
 			plugin::Loader loader{};
+			// 函数指针
 			plugin::fn::AsrInit init{};
 			plugin::fn::AsrTranscribe transcribe{};
 			plugin::fn::AsrFree free{};
+            plugin::fn::AsrDefaults defaults{};
+            plugin::fn::AsrCreate create{};
+            plugin::fn::AsrPush push{};
+            plugin::fn::AsrPoll poll{};
+            plugin::fn::AsrFlush flush{};
+            plugin::fn::AsrReset reset{};
+            plugin::fn::AsrDestroy destroy{};
+            plugin_asr_stream* stream{};
 		} asr;
 	} plug;
 public:

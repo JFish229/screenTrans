@@ -6,8 +6,15 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "screenTrans", "screenTrans\screenTrans.vcxproj", "{96E09171-886B-4052-9632-8D05A881D7AE}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ScreenTrans_Server", "ScreenTrans_Server\ScreenTrans_Server.vcxproj", "{18358DC1-BE1B-4BCE-B498-E962C0BE4A4D}"
+	ProjectSection(ProjectDependencies) = postProject
+		{96E09171-886B-4052-9632-8D05A881D7AE} = {96E09171-886B-4052-9632-8D05A881D7AE}
+	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ScreenTrans_Client", "ScreenTrans_Client\ScreenTrans_Client.vcxproj", "{B09B5930-1AA4-44F1-8C1F-433EFE852C90}"
+	ProjectSection(ProjectDependencies) = postProject
+		{96E09171-886B-4052-9632-8D05A881D7AE} = {96E09171-886B-4052-9632-8D05A881D7AE}
+		{407B75BB-82EA-4FA1-A15B-BC1ACE71AC6A} = {407B75BB-82EA-4FA1-A15B-BC1ACE71AC6A}
+	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "plugin_ASR", "ASR\ASR.vcxproj", "{407B75BB-82EA-4FA1-A15B-BC1ACE71AC6A}"
 EndProject

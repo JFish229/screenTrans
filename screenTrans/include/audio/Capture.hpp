@@ -37,6 +37,7 @@ namespace audio {
         bool Start();
         void Stop();
         bool IsRunning() const { return m_running; }
+        uint64_t TakeDroppedSamples() { return m_droppedSamples.exchange(0); }
 
         // std::move
         std::vector<float>& giveFrames(std::vector<float>& out);
@@ -59,6 +60,7 @@ namespace audio {
         bool m_initiated = false;
         std::atomic<bool> m_running = false;
         std::atomic<int> m_activeCallbacks{ 0 };
+        std::atomic<uint64_t> m_droppedSamples{0};
         uint32_t m_channels = 2;
         ma_device m_device{};
         //std::vector<float> m_frames;
