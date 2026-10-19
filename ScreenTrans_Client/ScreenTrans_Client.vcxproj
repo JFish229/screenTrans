@@ -21,10 +21,10 @@
   <ItemGroup>
     <ClCompile Include="src\H264Decoder.cpp" />
     <ClCompile Include="src\H264Encoder.cpp" />
-    <ClCompile Include="src\App.cpp" />
+    <ClCompile Include="src\ClientApp.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="include\App.hpp" />
+    <ClInclude Include="include\ClientApp.hpp" />
     <ClInclude Include="include\atomic_imgui.hpp" />
     <ClInclude Include="include\compile_time.hpp" />
     <ClInclude Include="include\H264Decoder.h" />

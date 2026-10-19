@@ -19,10 +19,10 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\App.cpp" />
+    <ClCompile Include="src\ServerApp.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="include\App.hpp" />
+    <ClInclude Include="include\ServerApp.hpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>

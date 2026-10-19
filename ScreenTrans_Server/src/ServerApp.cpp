@@ -1,12 +1,12 @@
 ﻿// SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Yuan Aowei
-#include <App.hpp>
+#include <ServerApp.hpp>
 #include <thread>
 #include <chrono>
 using std::literals::chrono_literals::operator""ms;
 using std::literals::chrono_literals::operator""s;
 
-void App::register_handle(std::optional<net::tcp::Client> c) {
+void ServerApp::register_handle(std::optional<net::tcp::Client> c) {
 	if (!c) {
 		println("server accept error");
 		return;
@@ -33,6 +33,16 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 	const user::id_t user_id = Room::makeId(c->Id());
 	c->Send(user_id);
 	bool audio_connection_consumed{ false };
+	bool sync_connection;
+	if(!c->ReceiveBy(sync_connection)){ // not sure whether audio connection is built
+		(void)waitAudioConnection(user_id); // things dealed inside
+		return;
+	}
+
+	auto audio_client = waitAudioConnection(user_id);
+	assert(audio_client);
+	audio_connection_consumed = true;
+
 
 	while (1) {
 		switch (page) {
@@ -61,14 +71,6 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 
 			std::shared_ptr<Room> room;
 
-			auto audio_client = waitAudioConnection(user_id);
-			audio_connection_consumed = true;
-			assert(audio_client);
-			if(audio_client->Closed()) {
-				c->Send(Room::invalid_passwd);
-				page = Page::interrupted; 
-				break; 
-			}
 			room = std::make_shared<Room>(passwd);
 			c->Send(room->id());
 			println("give id: " << room->id());
@@ -125,16 +127,9 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 					c->Send(true); // success
 				}
 
-				auto audio_client = waitAudioConnection(user_id);
-				audio_connection_consumed = true;
-				assert(audio_client);
-				if (
-					audio_client->Closed() || 
-					!audio_client->Send(true)					
-				) { 
-					page = Page::interrupted;
-					break; 
-				}
+				//println("sleeping");
+				//std::this_thread::sleep_for(5s);
+				//println("sleep over");
 
 				{
 					std::lock_guard lock(mtx_rooms);
@@ -159,10 +154,7 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 				audio_connections.erase(itr0);
 				return;
 			}
-			// haven't pushed audio connection and audio_client is gonna push audio connection
-			if (!audio_connection_consumed) {
-				audio_connections.try_emplace(user_id, std::nullopt);
-			}
+			// now audio_client has always pushed connection
 			return;
 		}break;
 		}
@@ -170,7 +162,7 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 }
 
 // erase empty and unused rooms every 5 seconds
-void App::check_empty_rooms() {
+void ServerApp::check_empty_rooms() {
 	for (;;) {
 		std::this_thread::sleep_for(5s);
 		std::vector<uint32_t> record;
@@ -197,7 +189,7 @@ void App::check_empty_rooms() {
 	}
 }
 
-void App::pushAudioConnection(net::tcp::Client audioClient) {
+void ServerApp::pushAudioConnection(net::tcp::Client audioClient) {
 	struct {
 		user::id_t user_id;
 	} rv;
@@ -215,26 +207,47 @@ void App::pushAudioConnection(net::tcp::Client audioClient) {
 			}
 		}
 		auto [itr, ok] = audio_connections.try_emplace(rv.user_id, std::move(audioClient));
-		if (!itr->second->Send(true)) {
+		if (!itr->second->Send(true)) { // sync_connection
 			itr->second->Close();
 		}
 	}
 }
 
-std::optional<net::tcp::Client> App::waitAudioConnection(user::id_t id) {
-	std::lock_guard lock(mtx_audio_connections);
-	auto a_it = audio_connections.find(id);
-	if (a_it == audio_connections.end()) { return {}; }
+std::optional<net::tcp::Client> ServerApp::waitAudioConnection(user::id_t id) {
+	decltype(audio_connections)::iterator a_it;
+	bool sync_error{ false };
+	util::Timer timer;
+	timer.restart();
+	for (;;) {
+		{
+			std::lock_guard lock(mtx_audio_connections);
+			a_it = audio_connections.find(id);
+			if (a_it != audio_connections.end()) { 
+				if (!sync_error) [[likely]] { // normal
+					break; 
+				}
+				else { // audio connection has been built but user client interrupted
+					break;
+				}
+			}
+		}
+		// meaning that client.ReceiveBy(sync_connection) == false, and we need to find out whther audio_connection has been pushed
+		sync_error = true;
+		std::this_thread::sleep_for(500ms);
+		if (timer.seconds() > 5.0) { // assume audio connection not built(since audio connection built time should be << 5s)
+			return {};
+		}
+	}
 	auto res = std::move(a_it->second);
 	audio_connections.erase(a_it);
 	return res;
 }
 
-App::App() {
+ServerApp::ServerApp() {
 
 }
 
-void App::run() {
+void ServerApp::run() {
 	uint16_t port;
 	print("input port to be set: ");
 	std::cin >> port;
@@ -242,15 +255,15 @@ void App::run() {
 	server.Listen();
 	println("waiting for the first client...");
 
-	std::jthread t_check_empty_rooms(&App::check_empty_rooms, this);
+	std::jthread t_check_empty_rooms(&ServerApp::check_empty_rooms, this);
 	for (;;) {
 		auto c = server.Accept();
-		std::thread register_thread(&App::register_handle, this, std::move(c));
+		std::thread register_thread(&ServerApp::register_handle, this, std::move(c));
 		register_thread.detach();
 	}
 }
 
 int main() {
-	App app{};
+	ServerApp app{};
 	app.run();
 }
