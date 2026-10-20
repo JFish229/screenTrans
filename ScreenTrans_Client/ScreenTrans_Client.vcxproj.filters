@@ -15,13 +15,16 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\App.cpp">
-      <Filter>源文件</Filter>
-    </ClCompile>
     <ClCompile Include="src\H264Decoder.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="src\H264Encoder.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="src\CameraCapture.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="src\App.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
   </ItemGroup>
@@ -39,6 +42,9 @@
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="include\compile_time.hpp">
+      <Filter>头文件</Filter>
+    </ClInclude>
+    <ClInclude Include="include\CameraCapture.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
   </ItemGroup>

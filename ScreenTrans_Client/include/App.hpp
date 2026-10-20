@@ -65,6 +65,7 @@ using std::literals::chrono_literals::operator""s;
 #include <gl/util.h>
 
 #include <compile_time.hpp>
+#include "CameraCapture.hpp"
 
 #ifndef NDEBUG
 #	define print(x) std::cout<< x
@@ -107,6 +108,26 @@ template <typename CB>
 [[nodiscard]] std::size_t cbPop(CB& cb, typename CB::pointer out, std::size_t count);
 
 class App {
+private:
+	CameraCapture m_cameraCapture;
+	bool m_enableCamera = false;
+	void EnableCamera(bool enable);
+	void CameraCaptureThread();
+
+	void CameraCaptureEncode();
+	void CameraDecode();
+	static inline constexpr size_t send_camera_packets_count = 4;
+	static inline constexpr size_t recv_camera_packets_count = 4;
+	static inline constexpr size_t total_capture_frames_count = 4;
+
+	boost::lockfree::spsc_queue<std::vector<uint8_t>> send_camera_packets{ send_camera_packets_count };
+
+	boost::lockfree::spsc_queue<std::vector<uint8_t>> recv_camera_packets{ recv_camera_packets_count };
+
+	boost::lockfree::spsc_queue<ST::DecodedFrame> total_capture_frames{ total_capture_frames_count };
+
+
+
 private:
 	static std::unique_ptr<gl::Window> makeWindow();
 private:
@@ -241,6 +262,7 @@ private:
 		std::atomic<bool> is_host{ false };
 		std::atomic<bool> share_video{ false };
 		std::atomic<bool> share_audio{ false };
+		std::atomic<bool> share_camera{ false };
 		static constexpr float audio_playing_least = 0.01f;
 		std::atomic<bool> audio_playing{ false };
 		std::string name;
@@ -293,6 +315,7 @@ private:
 		struct {
 			std::atomic<bool> share_audio{ false };
 			std::atomic<bool> share_video{ false };
+			std::atomic<bool> share_camera{ false };
 			std::atomic<boost::float64_t> fps = 20;
 			std::atomic<user::id_t> words_msg_target{ user::public_target }; // invalid => public msg
 			struct {
