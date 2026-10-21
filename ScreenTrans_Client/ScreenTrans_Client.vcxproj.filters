@@ -15,6 +15,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\ClientApp.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClCompile Include="src\H264Decoder.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
@@ -29,7 +32,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="include\App.hpp">
+    <ClInclude Include="include\ClientApp.hpp">
       <Filter>头文件</Filter>
     </ClInclude>
     <ClInclude Include="include\H264Decoder.h">

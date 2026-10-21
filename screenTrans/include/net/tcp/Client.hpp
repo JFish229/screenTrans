@@ -49,6 +49,22 @@ namespace net {
     static_assert(std::same_as<int32_t, int>);
 	using msg_size = int32_t;
 
+    enum class End : uint8_t{
+        little = 0,
+        big = 1,
+        native = std::endian::native == std::endian::little ? little : big,
+        net = big,
+    };
+
+    //auto EndInt(End end) {
+    //    return static_cast<std::underlying_type_t<End>>(end);
+    //}
+
+    struct EndSrcTar {
+        End src;
+        End tar;
+    };
+
     namespace tcp {
 
         class Client
@@ -80,15 +96,15 @@ namespace net {
             std::optional<msg_size> recv_all(void* buf, msg_size len);
 
             // when using this, there is no ntoh or hton
-            // bases of all Send
+            // basis of all Send
             bool Send(const void* data, size_t bytes);
             bool Send(const std::vector<uint8_t>& data);
             bool Send(const std::vector<int8_t>& data);
 
             //auto hton, so data inside will be changed, so copy or move
-            template<CIsVector vec>
-                requires CNumberType<typename vec::value_type>
-            bool Send(vec data);
+            //template<CIsVector vec>
+            //    requires CNumberType<typename vec::value_type>
+            //bool Send(vec data);
 
             template<CNumberType T>
             bool Send(const T data);
@@ -101,7 +117,8 @@ namespace net {
             bool ReceiveBy(std::string& out);
 
             template<CIsVector Vec>
-            bool ReceiveBy(Vec& out);
+                requires CNumberType<typename Vec::value_type>
+            bool ReceiveBy(Vec& out, EndSrcTar est/* = {End::net, End::local}*/);
 
             bool ReceiveBy(void* buf, size_t bytes);
         };

@@ -7,6 +7,8 @@
 #define USE_IMGUI 1
 #define USE_IMGUI_VIEWPORT 1
 
+#define USE_ASR 0
+
 #if	USE_IMGUI
 #	include "imgui.h"
 #	include "imgui_impl_glfw.h"
@@ -107,7 +109,7 @@ inline constexpr size_t words_msg_max_count = 128;
 template <typename CB>
 [[nodiscard]] std::size_t cbPop(CB& cb, typename CB::pointer out, std::size_t count);
 
-class App {
+class ClientApp {
 private:
 	CameraCapture m_cameraCapture;
 	bool m_enableCamera = false;
@@ -152,8 +154,8 @@ private:
 	void pageRenderBegin(const char* title, int sleepTime);
 	void pageRenderEnd();
 	struct PageRenderGuard {
-		App* p;
-		PageRenderGuard(App* self, const char* title, int sleepTime) : p{ self } { p->pageRenderBegin(title, sleepTime); }
+		ClientApp* p;
+		PageRenderGuard(ClientApp* self, const char* title, int sleepTime) : p{ self } { p->pageRenderBegin(title, sleepTime); }
 		~PageRenderGuard() { p->pageRenderEnd(); }
 	};
 	friend struct PageRenderGuard;
@@ -316,6 +318,7 @@ private:
 			std::atomic<bool> share_audio{ false };
 			std::atomic<bool> share_video{ false };
 			std::atomic<bool> share_camera{ false };
+			std::atomic<double> real_fps{};
 			std::atomic<boost::float64_t> fps = 20;
 			std::atomic<user::id_t> words_msg_target{ user::public_target }; // invalid => public msg
 			struct {
@@ -364,7 +367,7 @@ private:
 		} asr;
 	} plug;
 public:
-	App();
-	~App();
+	ClientApp();
+	~ClientApp();
 	void run();
 };
