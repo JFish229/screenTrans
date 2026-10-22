@@ -63,6 +63,13 @@ struct plugin_asr_stream : asr::Backend {
         if (ctx) whisper_free(ctx);
     }
     bool cancelled() const override { return stopping.load() || failed.load() || generation.load() != working_generation; }
+    bool allow_partial() override {
+        // A final decode can take long enough for a newer draft window to
+        // accumulate while consume() is still processing its current batch.
+        // Catch up with that PCM before spending another encode on stale text.
+        std::lock_guard lock(mutex);
+        return queued < static_cast<size_t>(config.partial_interval_ms * 16);
+    }
     static bool abort_compute(void* self) { return static_cast<plugin_asr_stream*>(self)->cancelled(); }
     void reset_vad() override { whisper_vad_reset_state(vad); }
     bool speech(const float* pcm) override {

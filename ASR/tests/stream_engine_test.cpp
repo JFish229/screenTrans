@@ -7,6 +7,8 @@ static void check(bool condition, const char* message) {
 }
 struct Fake : asr::Backend {
     bool cancel = false;
+    bool allow_draft = true;
+    bool allow_partial() override { return allow_draft; }
     int resets = 0, decodes = 0;
     std::vector<int64_t> from, through;
     std::vector<std::string> prompts;
@@ -58,9 +60,19 @@ int main() {
         engine.reset(); events.clear();
         feed(engine, 600, .5f); engine.reset(); events.clear(); feed(engine, 500, 0); engine.finish();
         check(events.empty(), "reset leaked prior meeting");
+        // A slow final can leave new PCM waiting outside the current batch.
+        // Skip obsolete drafts, retain all PCM, and still emit the final once.
+        engine.reset(); events.clear(); backend.allow_draft = false;
+        feed(engine, 1000, .5f);
+        check(events.empty(), "stale draft decoded while newer input was waiting");
+        backend.allow_draft = true; feed(engine, 32, .5f);
+        check(events.size() == 1 && events.back().kind == asr::Event::partial, "draft did not resume after catch-up");
+        engine.finish();
+        check(events.size() == 2 && events.back().kind == asr::Event::final && events.back().end == 1032 * 16, "catch-up lost final PCM");
+        engine.reset(); events.clear();
         backend.cancel = true; feed(engine, 2000, .5f); engine.finish();
         check(events.empty(), "cancelled work published");
-        std::cout << "stream engine: 8 behavior scenarios passed\n";
+        std::cout << "stream engine: segmentation, rolling boundaries, draft backpressure passed\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

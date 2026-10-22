@@ -252,8 +252,11 @@ private:
 		} total_words_msg;
 	};
 	std::unordered_map < user::id_t, User > users; // init with self
-	boost::circular_buffer<float> asrLocalAudio{ audio::sampleRate / 5 };
+	boost::circular_buffer<float> asrLocalAudio{ audio::sampleRate }; // tolerate callback bursts without dropping PCM
     std::atomic<bool> asrDiscontinuity{false};
+    std::atomic<bool> captureActive{false};
+    std::atomic<float> capturePeak{0}, asrInputPeak{0};
+    std::atomic<uint64_t> captureSamples{0}, asrInputSamples{0}, asrInterruptions{0};
     std::string asrStatus;
 	std::string speechWords;
 

@@ -83,6 +83,8 @@ namespace audio {
             return false;
         }
         m_running = true;
+        std::clog << "Microphone started: " << m_device.capture.name
+                  << " | " << m_device.sampleRate << " Hz | channels=" << m_channels << '\n';
         return true;
     }
 

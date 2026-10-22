@@ -33,6 +33,7 @@ struct Backend {
     virtual std::string decode(const DecodeRequest&) = 0;
     virtual void reset_vad() = 0;
     virtual bool cancelled() const = 0;
+    virtual bool allow_partial() { return true; }
 };
 // All segmentation state belongs to the worker. Producers never mutate it.
 class Engine {
@@ -53,7 +54,7 @@ public:
             if (frame_.size() == vad_frame) { process_frame(); frame_.clear(); }
         }
         // Coalesce obsolete draft deadlines in a received batch.
-        if (active_ && voiced_ >= settings_.first_ms * 16 && cursor_ >= next_draft_ && !backend_.cancelled()) {
+        if (active_ && voiced_ >= settings_.first_ms * 16 && cursor_ >= next_draft_ && !backend_.cancelled() && backend_.allow_partial()) {
             recognize(false, cursor_);
             next_draft_ = cursor_ + settings_.step_ms * 16;
         }

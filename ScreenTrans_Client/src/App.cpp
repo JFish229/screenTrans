@@ -409,7 +409,9 @@ void App::audioSend(){
 		[this]() {p_show.wait_threads.release();}
 	};
 	audio::Capture ad_cpt{ audio::sampleRate, audio::channels, audio::periodSizeInFrames, audio::bufSec };
-	ad_cpt.Start();
+	captureActive.store(ad_cpt.Start());
+	if (!captureActive.load()) std::cerr << "ASR: microphone start failed; check Windows microphone access/default device\n";
+    DEFER{ [this]() { captureActive.store(false); } };
 	std::vector<float> buf_audio{};
     asr_audio::CaptureGate captureGate;
 
@@ -424,6 +426,8 @@ void App::audioSend(){
 
         // Always drain, even while muted, before any potentially blocking send.
         ad_cpt.giveFrames(buf_audio);
+        captureSamples.fetch_add(buf_audio.size());
+        capturePeak.store(std::max(asr_audio::peak(buf_audio), capturePeak.load() * .90f));
         if (const auto dropped = ad_cpt.TakeDroppedSamples()) {
             buf_audio.clear(); asrDiscontinuity.store(true);
             std::cerr << "Capture overrun: " << dropped << " samples dropped\n";
@@ -433,10 +437,10 @@ void App::audioSend(){
         if (plug.asr.stream) {
             std::lock_guard lock(mtx_asrLocal);
             if (!sharing || changed) asrLocalAudio.clear();
-            if (buf_audio.size() > asrLocalAudio.capacity() - asrLocalAudio.size()) {
+            if (const auto dropped = asr_audio::append_audio(asrLocalAudio, buf_audio)) {
                 asrDiscontinuity.store(true);
+                std::cerr << "ASR local buffer overflow: " << dropped << " samples lost\n";
             }
-            asrLocalAudio.insert(asrLocalAudio.end(), buf_audio.begin(), buf_audio.end());
         }
         client_audio.Send(get(logger.id));
 		faudio_t faudio{ 0 };
@@ -496,7 +500,12 @@ void App::audioRecv(){
 			std::lock_guard lock(mtx_users);
 			auto [itr, first] = users.try_emplace(rv.id);
 			auto& user = itr->second;
-			user.audioBuf.insert(user.audioBuf.end(), rv.audioFrames.begin(), rv.audioFrames.end());
+            if (const auto dropped = asr_audio::append_audio(user.audioBuf, rv.audioFrames)) {
+                if (rv.id != get(logger.id)) {
+                    asrDiscontinuity.store(true);
+                    std::cerr << "ASR remote buffer overflow: " << dropped << " samples lost\n";
+                }
+            }
 			//user.audioBuf.push(rv.audioFrames.begin(), rv.audioFrames.end());
 			set(user.share_audio, rv.faudio & faudio_share);
 		}
@@ -523,6 +532,12 @@ void App::ScreenCaptureEncode() {
 
 	auto last_time = std::chrono::steady_clock::now();
 	while (!p_show.ended() && !clientClosed()) {
+		if (!get(ui.send.share_video)) {
+			// Audio-only meetings must not continuously capture and encode the desktop.
+			std::this_thread::sleep_for(20ms);
+			last_time = std::chrono::steady_clock::now();
+			continue;
+		}
 		if (!capture.CaptureFrame()) {
 			continue;
 		}
@@ -561,6 +576,7 @@ void App::ScreenDecode() {
 	std::vector<std::vector<uint8_t>> pkts(recv_screen_packets_count);
 	while (!p_show.ended() && !clientClosed()) {
 		const size_t pkts_count = recv_screen_packets.pop(pkts.data(), recv_screen_packets_count);
+		if (pkts_count == 0) { std::this_thread::sleep_for(2ms); continue; }
 		for (size_t i = 0;i < pkts_count;++i) {
 			auto frames = decoder.DecodePacket(pkts[i]);
 			for (auto& frame : frames) {
@@ -584,18 +600,14 @@ void App::audioMix() {
         std::this_thread::sleep_until(next);
         if (std::chrono::steady_clock::now() - next > 200ms) {
             next = std::chrono::steady_clock::now();
-            asrDiscontinuity.store(true);
+            // Scheduling delay alone does not imply PCM loss. The bounded
+            // producer queues report actual overruns, with a reason, instead.
         }
         std::fill(playback.begin(), playback.end(), 0.0f);
         {
             std::lock_guard lock(mtx_users);
             for (auto& [id, user] : users) {
-                // Bound jitter latency; make any dropped timeline explicit to ASR.
-                if (user.audioBuf.size() > audio::sampleRate / 5) {
-                    user.audioBuf.erase_begin(user.audioBuf.size() - audio::sampleRate / 5);
-                    if (id != get(logger.id)) asrDiscontinuity.store(true);
-                }
-                const auto n = cbPop(user.audioBuf, scratch.data(), samples);
+                const auto n = asr_audio::pop_audio(user.audioBuf, std::span<float>(scratch));
                 bool playing = false;
                 for (size_t i = 0; i < n; ++i) {
                     playing |= std::abs(scratch[i]) > User::audio_playing_least;
@@ -608,13 +620,15 @@ void App::audioMix() {
         recognition = playback;
         if (plug.asr.stream) {
             std::lock_guard lock(mtx_asrLocal);
-            const auto n = cbPop(asrLocalAudio, scratch.data(), samples);
+            const auto n = asr_audio::pop_audio(asrLocalAudio, std::span<float>(scratch));
             asr_audio::add(recognition, std::span<const float>(scratch.data(), n));
         }
         asr_audio::normalize(playback); asr_audio::normalize(recognition);
         audioUser.pushFrames(playback.data(), playback.size());
         // Push silence too: VAD must see the pause even when packets stop arriving.
         if (plug.asr.stream) {
+            asrInputSamples.fetch_add(recognition.size());
+            asrInputPeak.store(std::max(asr_audio::peak(recognition), asrInputPeak.load() * .90f));
             const int status = plug.asr.push(plug.asr.stream, recognition.data(), static_cast<uint32_t>(recognition.size()));
             if (status < 0 && status != PLUGIN_ASR_CLOSED) {
                 std::cerr << "ASR push failed: " << status << '\n';
@@ -635,6 +649,8 @@ void App::asrRecv() {
         if (asrDiscontinuity.exchange(false)) {
             plug.asr.reset(plug.asr.stream);
             draft.clear();
+            asrInterruptions.fetch_add(1);
+            { std::lock_guard lock(mtx_speechWords); asrStatus = "Audio samples lost; waiting for new speech."; }
             std::cerr << "ASR: input discontinuity; stream reset\n";
         }
         for (;;) {
@@ -653,7 +669,8 @@ void App::asrRecv() {
                 draft.clear();
                 std::cerr << "ASR: " << value << '\n';
                 std::lock_guard lock(mtx_speechWords);
-                asrStatus = result.type == PLUGIN_ASR_ERROR ? "Subtitles unavailable; rejoin to retry." : "Audio interrupted; subtitles resumed.";
+                if (result.type == PLUGIN_ASR_GAP) asrInterruptions.fetch_add(1);
+                asrStatus = result.type == PLUGIN_ASR_ERROR ? "Subtitles unavailable; rejoin to retry." : "ASR overloaded; waiting for new speech. See startup log.";
             }
             if (result.type == PLUGIN_ASR_PARTIAL || result.type == PLUGIN_ASR_FINAL) {
                 std::clog << "ASR event=" << result.type << " id=" << result.utterance_id
@@ -705,6 +722,8 @@ App::Page App::Show() {
     { std::lock_guard lock(mtx_asrLocal); asrLocalAudio.clear(); }
     { std::lock_guard lock(mtx_speechWords); speechWords.clear(); if (plug.asr.stream) asrStatus.clear(); }
     asrDiscontinuity.store(false);
+    captureSamples.store(0); asrInputSamples.store(0); asrInterruptions.store(0);
+    capturePeak.store(0); asrInputPeak.store(0);
 	set(ui.room_user.chosen_user, get(logger.id));
 	{
 		std::lock_guard lock2{ mtx_users };
@@ -1061,6 +1080,14 @@ App::Page App::Show() {
 		}// host
 
 		if (ImGui::TreeNode("plugin")) {
+            ImGui::TextUnformatted(get(ui.send.share_audio) && !get(ui.room_user.is_muted_keep)
+                ? "Local microphone sharing: ON" : "Local microphone sharing: OFF (enable share_audio to transcribe yourself)");
+            ImGui::Text("Capture: %s | samples: %llu", captureActive.load() ? "running" : "NOT RUNNING",
+                static_cast<unsigned long long>(captureSamples.load()));
+            ImGui::ProgressBar(capturePeak.load(), ImVec2(-FLT_MIN, 0), "Microphone level");
+            ImGui::ProgressBar(asrInputPeak.load(), ImVec2(-FLT_MIN, 0), "ASR input level (local + remote)");
+            ImGui::Text("ASR input: %.1fs | interruptions: %llu", asrInputSamples.load() / 16000.0,
+                static_cast<unsigned long long>(asrInterruptions.load()));
 			ImGui::BeginChild("##speech", ImVec2(-FLT_MIN, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
 			ImGui::PushTextWrapPos(0.0f);   // 0 表示按窗口右边界换行
 			{
