@@ -1,0 +1,17 @@
+[
+  {
+    "path": "x64/Release/ScreenTrans_Client.exe",
+    "bytes": 1364480,
+    "sha256": "201ea88a376067c28aba74ea25bc238776e71b93d5d1c670256e690e6b0a9505"
+  },
+  {
+    "path": "x64/Release/ScreenTrans_Server.exe",
+    "bytes": 135680,
+    "sha256": "430180c3a1b5ce870637c92019cb027c962f75cecb1f92e854e8e92ca24e8b34"
+  },
+  {
+    "path": "x64/Release/plugin/plugin_ASR.dll",
+    "bytes": 1613312,
+    "sha256": "967e6f64cfee686e7bc6ec5f83ac71e44ed53a1daa134b1b43a126e9d0122af7"
+  }
+]

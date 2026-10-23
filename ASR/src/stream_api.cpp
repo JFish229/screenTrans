@@ -4,6 +4,9 @@
 #include "whisper.h"
 #include "ggml-backend.h"
 #include "model_file.hpp"
+#include "audio_quality.hpp"
+#include "trace_hash.hpp"
+#include "../../screenTrans/include/asr_trace.hpp"
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -41,6 +44,10 @@ struct plugin_asr_stream : asr::Backend {
     whisper_context* ctx = nullptr;
     whisper_vad_context* vad = nullptr;
     plugin_asr_config config{};
+    asr::Tuning tuning;
+    asr::Highpass highpass;
+    asr_trace::Writer trace{"plugin"};
+    int64_t trace_position=0, trace_input_position=0; uint64_t trace_seq=0;
     std::mutex mutex;
     std::condition_variable ready;
     std::deque<Chunk> input;
@@ -72,12 +79,16 @@ struct plugin_asr_stream : asr::Backend {
     }
     static bool abort_compute(void* self) { return static_cast<plugin_asr_stream*>(self)->cancelled(); }
     void reset_vad() override { whisper_vad_reset_state(vad); }
-    bool speech(const float* pcm) override {
+    bool speech(const float* pcm) override { return probability(pcm)>=.5f; }
+    float probability(const float* pcm) override {
         if (!whisper_vad_detect_speech_no_reset(vad, pcm, asr::vad_frame)) throw std::runtime_error("Silero inference failed");
         const int count = whisper_vad_n_probs(vad);
         const float* probs = whisper_vad_probs(vad);
         if (count < 1 || !probs) throw std::runtime_error("Silero returned no probabilities");
-        return probs[count - 1] >= 0.5f;
+        const float p=probs[count-1];
+        trace.record("vad-"+std::to_string(p),0,working_generation,trace_seq++,trace_position);
+        trace_position+=asr::vad_frame;
+        return p;
     }
     std::string decode(const asr::DecodeRequest& request) override {
         auto p = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
@@ -114,7 +125,10 @@ struct plugin_asr_stream : asr::Backend {
         if (cancelled()) return {};
         if (status != 0) throw std::runtime_error("Whisper inference failed");
         std::string text;
+        double token_sum=0; int token_count=0; float no_speech=0;
         for (int segment = 0; segment < whisper_full_n_segments(ctx); ++segment) {
+            no_speech=std::max(no_speech,whisper_full_get_segment_no_speech_prob(ctx,segment));
+            for(int token=0;token<whisper_full_n_tokens(ctx,segment);++token) if(whisper_full_get_token_id(ctx,segment,token)<whisper_token_eot(ctx)) { token_sum+=whisper_full_get_token_data(ctx,segment,token).p; ++token_count; }
             if (!bounded) { text += whisper_full_get_segment_text(ctx, segment); continue; }
             std::string bytes;
             int64_t t0 = -1, t1 = -1;
@@ -131,12 +145,16 @@ struct plugin_asr_stream : asr::Backend {
                 bytes.clear(); t0 = t1 = -1;
             }
         }
+        const float confidence=token_count?float(token_sum/token_count):0;
+        const char* reason=tuning.quality?asr::reject(text,request.voiced_ms,request.vad_probability,request.snr_db,confidence,no_speech):nullptr;
+        trace.record(std::string(reason?reason:"accepted")+"-conf-"+std::to_string(confidence)+"-no-speech-"+std::to_string(no_speech)+"-snr-"+std::to_string(request.snr_db),0,working_generation,trace_seq++,request.from,{},text+" | voiced_ms="+std::to_string(request.voiced_ms)+" vad="+std::to_string(request.vad_probability)+" through="+std::to_string(request.through)+" inference_ms="+std::to_string(inference_ms)+" queue_ms="+std::to_string(queue_ms));
+        if(reason) text.clear();
         return text;
     }
     void publish(asr::Event event) {
         std::lock_guard lock(mutex);
         if (cancelled()) return;
-        event.inference_ms = inference_ms; event.queue_ms = queue_ms;
+        if(event.kind==asr::Event::partial || event.kind==asr::Event::final) { event.inference_ms=inference_ms; event.queue_ms=queue_ms; }
         // Remove only drafts of this utterance, never other completed sentences.
         if (event.kind == asr::Event::partial || event.kind == asr::Event::final) {
             std::erase_if(output, [&](const asr::Event& e) { return e.kind == asr::Event::partial && e.id == event.id; });
@@ -164,6 +182,7 @@ struct plugin_asr_stream : asr::Backend {
         asr::Settings s;
         s.first_ms = config.first_partial_ms; s.step_ms = config.partial_interval_ms;
         s.silence_ms = config.silence_ms; s.pre_ms = config.pre_roll_ms; s.window_ms = config.max_window_ms;
+        s.min_ms=96; s.hysteresis=vad!=nullptr && tuning.hysteresis; s.start=tuning.start; s.hold=tuning.hold;
         asr::Engine engine(*this, s, [this](auto e) { publish(std::move(e)); });
         for (;;) {
             std::deque<Chunk> batch;
@@ -179,12 +198,18 @@ struct plugin_asr_stream : asr::Backend {
                 flush = flush_pending; flush_pending = false;
             }
             try {
-                if (reset) engine.reset(position);
+                if (reset) { engine.reset(position); highpass.reset(); inference_ms=queue_ms=0; trace_position=trace_input_position=position; trace_seq=0; }
                 // Feed one contiguous batch so outdated partial deadlines coalesce.
                 std::vector<float> pcm;
                 for (auto& chunk : batch) pcm.insert(pcm.end(), chunk.pcm.begin(), chunk.pcm.end());
                 batch_enqueued = batch.empty() ? Clock::now() : batch.front().enqueued;
-                if (!pcm.empty()) engine.consume(pcm.data(), pcm.size());
+                if (!pcm.empty()) {
+                    trace.record("raw",0,working_generation,trace_seq++,trace_input_position,pcm);
+                    if(ctx && vad) highpass.apply(pcm,tuning.highpass_hz);
+                    trace.record("filtered",0,working_generation,trace_seq++,trace_input_position,pcm);
+                    trace_input_position+=pcm.size();
+                    engine.consume(pcm.data(), pcm.size());
+                }
                 if (flush && !cancelled()) {
                     engine.finish(); asr::Event event; event.kind = asr::Event::drained; publish(event);
                 }
@@ -217,7 +242,16 @@ int plugin_asr_stream_create(const plugin_asr_config* c, plugin_asr_stream** out
         copy_error(error, cap, "Invalid ASR configuration/ABI"); return PLUGIN_ASR_INVALID;
     }
     try {
-        auto stream = std::make_unique<plugin_asr_stream>(); stream->config = *c;
+        auto stream = std::make_unique<plugin_asr_stream>(); stream->config = *c; stream->tuning=asr::Tuning::load();
+        std::fprintf(stderr,"ASR tuning: highpass=%.1f start=%.2f hold=%.2f threads=%d model=%s vad=%s\n",stream->tuning.highpass_hz,stream->tuning.start,stream->tuning.hold,c->n_threads,c->model_path,c->vad_model_path);
+        stream->trace.record("configuration",0,0,0,0,{},std::string(c->model_path)+" | threads="+std::to_string(c->n_threads)+" first="+std::to_string(c->first_partial_ms)+" step="+std::to_string(c->partial_interval_ms)+" endpoint="+std::to_string(c->silence_ms)+" highpass="+std::to_string(stream->tuning.highpass_hz)+" vad_start="+std::to_string(stream->tuning.start)+" vad_hold="+std::to_string(stream->tuning.hold)+" quality="+std::to_string(stream->tuning.quality)+" hysteresis="+std::to_string(stream->tuning.hysteresis));
+        if(stream->trace.enabled()) {
+            const auto path=[](const char* p){return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(p)));};
+            HMODULE module=nullptr; wchar_t dll_path[32768]{};
+            GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS|GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,reinterpret_cast<LPCWSTR>(&plugin_asr_stream_create),&module);
+            GetModuleFileNameW(module,dll_path,32768);
+            stream->trace.record("asset-hashes",0,0,0,0,{},"model="+asr_trace::sha256(path(c->model_path))+" vad="+asr_trace::sha256(path(c->vad_model_path))+" dll="+asr_trace::sha256(std::filesystem::path(dll_path)));
+        }
         // Registration/loading is process-global; serialize concurrent creates.
         static std::mutex loading;
         std::lock_guard guard(loading);

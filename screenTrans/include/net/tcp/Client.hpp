@@ -102,6 +102,7 @@ namespace net {
 
             template<CIsVector Vec>
             bool ReceiveBy(Vec& out);
+            template<CIsVector Vec> bool ReceiveBounded(Vec& out, size_t max_bytes);
 
             bool ReceiveBy(void* buf, size_t bytes);
         };

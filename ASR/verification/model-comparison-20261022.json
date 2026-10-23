@@ -1,0 +1,336 @@
+[
+  {
+    "threads": 8,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 714.9260999867693,
+    "first_draft_from_estimated_onset_ms": 1048.3745999713428,
+    "inference_ms": {
+      "p50": 473.44590000000005,
+      "p95": 564.0189,
+      "count": 22
+    },
+    "queue_ms": {
+      "p50": 465.31910000000005,
+      "p95": 555.4517,
+      "count": 22
+    },
+    "audio_end_to_event_ms": {
+      "p50": 481.8986499917228,
+      "p95": 840.9515999546275,
+      "count": 22
+    },
+    "transcript": "大家好今天我们讨论清会议项目的与音时别。我们需要降低字幕延迟。同时减少错字和漏字。",
+    "failures": [],
+    "accuracy": {
+      "cer": 0.07894736842105263,
+      "reference_characters": 38,
+      "substitutions": 3,
+      "deletions": 0,
+      "insertions": 0
+    },
+    "variant": "original-base-8",
+    "run_failed": false
+  },
+  {
+    "threads": 8,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 660.673999984283,
+    "first_draft_from_estimated_onset_ms": 937.5804999922402,
+    "inference_ms": {
+      "p50": 460.1004,
+      "p95": 493.0352,
+      "count": 23
+    },
+    "queue_ms": {
+      "p50": 444.5326,
+      "p95": 471.6015,
+      "count": 23
+    },
+    "audio_end_to_event_ms": {
+      "p50": 479.3205000059679,
+      "p95": 796.9652999844402,
+      "count": 23
+    },
+    "transcript": "大家好今天我们讨论清会议项目的与音时别。我们需要降低字幕延迟。同时减少错字和漏字。",
+    "failures": [],
+    "accuracy": {
+      "cer": 0.07894736842105263,
+      "reference_characters": 38,
+      "substitutions": 3,
+      "deletions": 0,
+      "insertions": 0
+    },
+    "variant": "link-only-base-8",
+    "run_failed": false
+  },
+  {
+    "threads": 4,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 917.8984999889508,
+    "first_draft_from_estimated_onset_ms": 1273.97869994957,
+    "inference_ms": {
+      "p50": 743.9819,
+      "p95": 782.2643,
+      "count": 15
+    },
+    "queue_ms": {
+      "p50": 726.4009,
+      "p95": 772.8504,
+      "count": 15
+    },
+    "audio_end_to_event_ms": {
+      "p50": 761.1434999769554,
+      "p95": 1367.7870999909937,
+      "count": 15
+    },
+    "transcript": "大家好今天我们讨论清会议项目的与音识别我们需要降低字幕延迟同时减少错字和漏字",
+    "failures": [],
+    "accuracy": {
+      "cer": 0.05263157894736842,
+      "reference_characters": 38,
+      "substitutions": 2,
+      "deletions": 0,
+      "insertions": 0
+    },
+    "variant": "quality-base-4",
+    "run_failed": false
+  },
+  {
+    "threads": 8,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 638.8156000175513,
+    "first_draft_from_estimated_onset_ms": 977.5598999890499,
+    "inference_ms": {
+      "p50": 461.3658,
+      "p95": 495.2961,
+      "count": 23
+    },
+    "queue_ms": {
+      "p50": 446.8221,
+      "p95": 484.427,
+      "count": 23
+    },
+    "audio_end_to_event_ms": {
+      "p50": 473.8290000096895,
+      "p95": 939.1135999704711,
+      "count": 23
+    },
+    "transcript": "大家好今天我们讨论清会议项目的与音识别我们需要降低字幕延迟同时减少错字和漏字",
+    "failures": [],
+    "accuracy": {
+      "cer": 0.05263157894736842,
+      "reference_characters": 38,
+      "substitutions": 2,
+      "deletions": 0,
+      "insertions": 0
+    },
+    "variant": "quality-base-8",
+    "run_failed": false
+  },
+  {
+    "threads": 4,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 1116.0997000406496,
+    "first_draft_from_estimated_onset_ms": 1377.46780000953,
+    "inference_ms": {
+      "p50": 844.7702,
+      "p95": 873.7978,
+      "count": 13
+    },
+    "queue_ms": {
+      "p50": 832.5228,
+      "p95": 866.8179,
+      "count": 13
+    },
+    "audio_end_to_event_ms": {
+      "p50": 868.8643000093289,
+      "p95": 1532.6606000065804,
+      "count": 13
+    },
+    "transcript": "大家好今天我们讨论清会议项目的与音时别。我们需要降低字幕延迟。同时减少错字和漏字。",
+    "failures": [],
+    "accuracy": {
+      "cer": 0.07894736842105263,
+      "reference_characters": 38,
+      "substitutions": 3,
+      "deletions": 0,
+      "insertions": 0
+    },
+    "variant": "quality-base-q5_1-4",
+    "run_failed": false
+  },
+  {
+    "threads": 8,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 765.3207000112161,
+    "first_draft_from_estimated_onset_ms": 1048.6547000086866,
+    "inference_ms": {
+      "p50": 510.55165,
+      "p95": 530.2618,
+      "count": 20
+    },
+    "queue_ms": {
+      "p50": 502.36025,
+      "p95": 524.4054,
+      "count": 20
+    },
+    "audio_end_to_event_ms": {
+      "p50": 524.5970499913674,
+      "p95": 801.713399972301,
+      "count": 20
+    },
+    "transcript": "大家好今天我们讨论清会议项目的与音时别。我们需要降低字幕延迟。同时减少错字和漏字。",
+    "failures": [],
+    "accuracy": {
+      "cer": 0.07894736842105263,
+      "reference_characters": 38,
+      "substitutions": 3,
+      "deletions": 0,
+      "insertions": 0
+    },
+    "variant": "quality-base-q5_1-8",
+    "run_failed": false
+  },
+  {
+    "threads": 4,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 3275.9346999810077,
+    "first_draft_from_estimated_onset_ms": null,
+    "inference_ms": null,
+    "queue_ms": null,
+    "audio_end_to_event_ms": null,
+    "transcript": "",
+    "failures": [
+      "push status 2",
+      "ASR audio queue overflow; stale audio cancelled",
+      "push status 2",
+      "ASR audio queue overflow; stale audio cancelled",
+      "push status 2",
+      "ASR audio queue overflow; stale audio cancelled",
+      "push status 2",
+      "ASR audio queue overflow; stale audio cancelled"
+    ],
+    "accuracy": {
+      "cer": 1.0,
+      "reference_characters": 38,
+      "substitutions": 0,
+      "deletions": 38,
+      "insertions": 0
+    },
+    "variant": "quality-small-q5_1-4",
+    "run_failed": true
+  },
+  {
+    "threads": 8,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 2080.68730001105,
+    "first_draft_from_estimated_onset_ms": 2274.102900022175,
+    "inference_ms": {
+      "p50": 1824.3023,
+      "p95": 1863.9517,
+      "count": 7
+    },
+    "queue_ms": {
+      "p50": 1816.5758,
+      "p95": 1863.3102,
+      "count": 7
+    },
+    "audio_end_to_event_ms": {
+      "p50": 2619.2628999943845,
+      "p95": 3343.485499991104,
+      "count": 7
+    },
+    "transcript": "大家好。今天我们讨论清晦意项目的语音识别。我们需要降低字幕延迟。同时减少错字和漏字。",
+    "failures": [],
+    "accuracy": {
+      "cer": 0.07894736842105263,
+      "reference_characters": 38,
+      "substitutions": 3,
+      "deletions": 0,
+      "insertions": 0
+    },
+    "variant": "quality-small-q5_1-8",
+    "run_failed": false
+  },
+  {
+    "threads": 4,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 3134.3932000454515,
+    "first_draft_from_estimated_onset_ms": null,
+    "inference_ms": null,
+    "queue_ms": null,
+    "audio_end_to_event_ms": null,
+    "transcript": "",
+    "failures": [
+      "push status 2",
+      "ASR audio queue overflow; stale audio cancelled",
+      "push status 2",
+      "ASR audio queue overflow; stale audio cancelled",
+      "push status 2",
+      "ASR audio queue overflow; stale audio cancelled",
+      "push status 2",
+      "ASR audio queue overflow; stale audio cancelled"
+    ],
+    "accuracy": {
+      "cer": 1.0,
+      "reference_characters": 38,
+      "substitutions": 0,
+      "deletions": 38,
+      "insertions": 0
+    },
+    "variant": "quality-small-4",
+    "run_failed": true
+  },
+  {
+    "threads": 8,
+    "window_ms": 8000,
+    "first_partial_ms": 512,
+    "gpu_requested": false,
+    "startup_and_warmup_ms": 2197.860900021624,
+    "first_draft_from_estimated_onset_ms": 2014.0984999793582,
+    "inference_ms": {
+      "p50": 1637.74945,
+      "p95": 1924.8019,
+      "count": 8
+    },
+    "queue_ms": {
+      "p50": 1622.38825,
+      "p95": 1929.2361,
+      "count": 8
+    },
+    "audio_end_to_event_ms": {
+      "p50": 1971.9579999574926,
+      "p95": 3178.96639994625,
+      "count": 8
+    },
+    "transcript": "大家好。今天我们讨论清晦意项目的语音识别。我们需要降低字幕延迟。同时减少错字和漏字。",
+    "failures": [],
+    "accuracy": {
+      "cer": 0.07894736842105263,
+      "reference_characters": 38,
+      "substitutions": 3,
+      "deletions": 0,
+      "insertions": 0
+    },
+    "variant": "quality-small-8",
+    "run_failed": false
+  }
+]

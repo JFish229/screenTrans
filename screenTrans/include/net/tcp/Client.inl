@@ -240,6 +240,7 @@ namespace tcp {
 		auto ret = recv_all(&net_len, static_cast<msg_size>(sizeof(msg_size)));
 		if (!ret || *ret != sizeof(msg_size)) [[unlikely]] { return {}; }
 		msg_size msg_len = network_to_host(net_len);
+		if (msg_len < 0 || msg_len > 16 * 1024 * 1024) { Close(); return {}; }
 		return msg_len;
 	}
 
@@ -255,7 +256,7 @@ namespace tcp {
 		if (!o_msg_bytes) { return false; }
 		msg_size msg_bytes = *o_msg_bytes;
 		if(sizeof(T) != msg_bytes) [[unlikely]] {
-			NET_SOCKET_SET_ERROR("receive not match");
+			Close(); NET_SOCKET_SET_ERROR("receive not match");
 			return false;
 		}
 		if (!recv_msg(&out, msg_bytes)) {
@@ -269,6 +270,7 @@ namespace tcp {
 		auto o_msg_bytes = recv_bytes();
 		if (!o_msg_bytes) { return false; }
 		msg_size msg_bytes = *o_msg_bytes;
+		if (msg_bytes > 65536) { Close(); return false; }
 		out.resize(msg_bytes);
 		if (!recv_msg(out.data(), msg_bytes)) {
 			return false;
@@ -276,32 +278,24 @@ namespace tcp {
 		return true;
 	}
 
-	template<CIsVector Vec>
-	inline bool Client::ReceiveBy(Vec& out) {
-		auto o_msg_bytes = recv_bytes();
-		if (!o_msg_bytes) { return false; }
-		msg_size msg_bytes = *o_msg_bytes;
-		using elem_t = typename Vec::value_type;
-		static_assert(!std::same_as<elem_t, bool>);
-		if (msg_bytes % sizeof(elem_t) != 0) [[unlikely]] {
-			NET_SOCKET_SET_ERROR("Receive vector but elem not match size");
-			return false;
-		}
-		out.resize(msg_bytes / sizeof(elem_t));
-		if (!recv_msg(out.data(), msg_bytes)) {
-			return false;
-		}
-		if constexpr (sizeof(elem_t) > 1) {
-			std::ranges::for_each(out, [](elem_t& e) { e = network_to_host(e); });
-		}
-		return true;
-	}
+    template<CIsVector Vec>
+    inline bool Client::ReceiveBy(Vec& out) { return ReceiveBounded(out, 16 * 1024 * 1024); }
+    template<CIsVector Vec>
+    inline bool Client::ReceiveBounded(Vec& out, size_t max_bytes) {
+        auto bytes = recv_bytes();
+        using T = typename Vec::value_type;
+        if (!bytes || size_t(*bytes) > max_bytes || *bytes % sizeof(T)) { out.clear(); Close(); return false; }
+        Vec pending(size_t(*bytes) / sizeof(T));
+        if (!recv_msg(pending.data(), *bytes)) { out.clear(); Close(); return false; }
+        if constexpr (sizeof(T) > 1) for (auto& v : pending) v = network_to_host(v);
+        out.swap(pending); return true;
+    }
 
 	inline bool Client::ReceiveBy(void* buf, size_t bytes) {
 		auto o_msg_bytes = recv_bytes();
 		if (!o_msg_bytes) { return false; }
 		const msg_size msg_bytes = *o_msg_bytes;
-		if (msg_bytes != bytes) [[unlikely]] { return false; }
+		if (msg_bytes != bytes) [[unlikely]] { Close(); return false; }
 		if (!recv_msg(buf, msg_bytes)) { return false; }
 		return true;
 	}

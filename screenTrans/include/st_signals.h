@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Yuan Aowei
 #pragma once
 
@@ -19,8 +19,8 @@ constexpr inline Choice choice_make_room	= 1;
 constexpr inline size_t words_msg_bytes = 256;
 
 using Connect_t = uint8_t;
-constexpr inline Connect_t connect_user	= 0;
-constexpr inline Connect_t connect_audio= 1;
+constexpr inline Connect_t connect_user	= 0x20;
+constexpr inline Connect_t connect_audio= 0x21;
 
 using faudio_t = uint8_t;
 constexpr inline faudio_t faudio_none			= 0;

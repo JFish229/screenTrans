@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Yuan Aowei
 #include <App.hpp>
 #include <thread>
@@ -15,6 +15,11 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 
 	Connect_t connect_type;
 	if (!c->ReceiveBy(connect_type)) { return; }
+    if (connect_type != connect_audio && connect_type != connect_user) { c->Send(false); return; }
+    uint32_t version=0;
+    if (!c->ReceiveBy(version)) return;
+    const bool compatible=version==captions::protocol;
+    if (!c->Send(compatible) || !compatible) return;
 
 	if (connect_type == connect_audio) {
 		pushAudioConnection(std::move(*c));
@@ -30,7 +35,8 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 		//end,
 	} page{ Page::choose };
 
-	const user::id_t user_id = Room::makeId(c->Id());
+	static std::atomic<uint64_t> next_source{1};
+    const user::id_t user_id = next_source.fetch_add(1);
 	c->Send(user_id);
 	bool audio_connection_consumed{ false };
 
@@ -63,7 +69,7 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 
 			auto audio_client = waitAudioConnection(user_id);
 			audio_connection_consumed = true;
-			assert(audio_client);
+			if(!audio_client) { page=Page::interrupted; break; }
 			if(audio_client->Closed()) {
 				c->Send(Room::invalid_passwd);
 				page = Page::interrupted; 
@@ -73,7 +79,7 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 			c->Send(room->id());
 			println("give id: " << room->id());
 
-			room->pushClient(std::move(*c), std::move(*audio_client));
+			room->pushClient(std::move(*c), std::move(*audio_client),user_id);
 			{
 				std::lock_guard lock(mtx_rooms);
 				rooms.push_back(std::move(room));
@@ -127,7 +133,7 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 
 				auto audio_client = waitAudioConnection(user_id);
 				audio_connection_consumed = true;
-				assert(audio_client);
+				if(!audio_client) { page=Page::interrupted; break; }
 				if (
 					audio_client->Closed() || 
 					!audio_client->Send(true)					
@@ -145,7 +151,7 @@ void App::register_handle(std::optional<net::tcp::Client> c) {
 					else {
 						c->Send(true);
 					}
-					room->pushClient(std::move(*c), std::move(*audio_client));
+					room->pushClient(std::move(*c), std::move(*audio_client),user_id);
 				}
 				page = Page::listen;
 				break;

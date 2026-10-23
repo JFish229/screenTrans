@@ -1,3 +1,5 @@
+> 2026-10-22：会议协议升级到 v2。客户端和服务器必须成套更新；最新打包、联测和诊断方法见 [TESTING-v2.md](verification/TESTING-v2.md)。后面的 2026-10-20 描述为历史修复背景。
+
 # FlexMeet 流式 ASR
 
 新版默认采用多语言 `base` + Silero VAD。客户端识别自己和远端的合并音频，显示可修订草稿和最终字幕。原来的三个 C ABI 导出保留，旧调用方仍使用完整缓冲转写语义。
@@ -83,10 +85,10 @@ $env:FLEXMEET_ASR_GPU = '0' # 强制 CPU；默认请求 GPU，并允许 CPU 回�
 `share_audio`，另一个关闭，避免同一支麦克风被两路重复送入；两端都可以看到字幕。
 展开 `settings -> plugin`：
 
-- `Local microphone sharing` 显示自身发送开关；关闭仅影响自己的声音，仍可识别远端。
+- `Local microphone sharing` 显示自身发送开关；关闭时停止本机识别，仍接收服务器统一广播的其他说话者字幕。
 - `Capture: running` 且 samples 增长，表示采集回调有数据。说话时 `Microphone level` 应变化。
-- `ASR input level` 是送到插件的本地与远端合并音量。自己的 sharing 关闭时，该条仍可显示远端音量。
-- `ASR input` 应持续增长；`interruptions` 不应持续增长。输入有音量却没有字幕时保存控制台日志。
+- `ASR input level` 只表示本机麦克风送入插件的音量；关闭 sharing 后不会对远端播放混音重复识别。
+- 开麦时 `ASR input` 应增长；`interruptions` 不应持续增长。输入有音量却没有字幕时保存控制台日志。
 - `Audio samples lost` 表示真实缓冲溢出，`ASR overloaded` 表示推理队列过载；这些提示都不再声称字幕已恢复。
 
 2026-10-20 修复了客户端将完整的 >200ms 到达批次裁短并反复重置 VAD 的问题。

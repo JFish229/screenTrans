@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Yuan Aowei
 #pragma once
 #include <glad/glad.h>
@@ -27,6 +27,8 @@
 #include <ScreenCapture.h>
 #include <st_signals.h>
 #include <Room.h>
+#include <captions.hpp>
+#include <asr_trace.hpp>
 #include <util/util.hpp>
 
 #include <plugin/Loader.hpp>
@@ -224,7 +226,12 @@ private:
 	//std::mutex mtx_video_frames;
 	std::mutex mtx_close;
 	std::mutex mtx_users;
-	std::mutex mtx_asrLocal;
+	std::mutex mtx_captions;
+    captions::Store captionStore;
+    std::deque<captions::Event> captionOutgoing;
+    uint64_t localEpoch=0;
+    bool localSharing=false;
+    std::mutex mtx_asrLocal;
 	std::mutex mtx_speechWords;
 
 	static inline constexpr size_t send_screen_packets_count = 4;

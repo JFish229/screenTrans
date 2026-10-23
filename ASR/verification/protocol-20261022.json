@@ -1,0 +1,11 @@
+{
+  "tests": "protocol mismatch, canonical source, duplicate/stale events, both speakers, late join, host transfer, exact PCM at 240/500ms, truncated PCM, NaN",
+  "real_dll_finals": 8,
+  "finals_identical": true,
+  "finals": 20,
+  "sync_ms": {
+    "p50": 0.7038000039756298,
+    "p95": 12.856599991209805,
+    "n": 12
+  }
+}

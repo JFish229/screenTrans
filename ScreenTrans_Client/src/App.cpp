@@ -209,6 +209,7 @@ bool App::clientClosed() {
 }
 
 void App::Receive() {
+    asr_trace::Writer trace("client-captions");
 	DEFER{ [this]() {
 		p_show.wait_threads.release();
 	}};
@@ -248,8 +249,9 @@ void App::Receive() {
 				std::lock_guard lock(mtx_users);
 				auto count = std::erase_if(users, [&](auto& user) { return user.first == rv.id;});
 			}
-			set(ui.room_user.chosen_user, get(logger.id));
-			continue;
+			{ std::lock_guard lock(mtx_captions); captionStore.depart(rv.id); std::lock_guard text_lock(mtx_speechWords); speechWords=captionStore.render(); }
+            set(ui.room_user.chosen_user, get(logger.id));
+            continue;
 		}
 
 		client.ReceiveBy(rv.other_name);
@@ -292,7 +294,16 @@ void App::Receive() {
 			}
 		}
 
-		if (!client.ReceiveBy(rv.share_video)) [[unlikely]] { break; }
+        std::vector<uint8_t> caption_wire; std::vector<captions::Event> received_captions;
+        if(!client.ReceiveBounded(caption_wire,captions::max_wire) || !captions::decode(caption_wire,received_captions)) { client.Close(); break; }
+        {
+            std::lock_guard lock(mtx_captions);
+            for(auto& e:received_captions) {
+                if(captionStore.apply(e)) trace.record("display-"+std::to_string(e.kind),e.source,e.epoch,e.revision,e.id,{},e.text+" | commit="+std::to_string(e.commit));
+            }
+            std::lock_guard text_lock(mtx_speechWords); speechWords=captionStore.render();
+        }
+        if (!client.ReceiveBy(rv.share_video)) [[unlikely]] { break; }
 
 		if (rv.is_host_from_client) {
 			if (rv.wanna_kick_off == get(logger.id)) [[unlikely]] {
@@ -393,7 +404,10 @@ void App::Send() {
 				user.total_words_msg.buf.push_back(logger.name + ": " + buf);
 			}
 		}
-		client.Send(get(ui.room_user.chosen_user));
+		        std::vector<captions::Event> caption_batch;
+        { std::lock_guard lock(mtx_captions); while(!captionOutgoing.empty() && caption_batch.size()<64) { caption_batch.push_back(std::move(captionOutgoing.front())); captionOutgoing.pop_front(); } }
+        if(!client.Send(captions::encode(caption_batch))) { client.Close(); break; }
+        client.Send(get(ui.room_user.chosen_user));
 		client.Send(share_video);
 		if (share_video) {
 			client.Send(pk_size);
@@ -414,6 +428,9 @@ void App::audioSend(){
     DEFER{ [this]() { captureActive.store(false); } };
 	std::vector<float> buf_audio{};
     asr_audio::CaptureGate captureGate;
+    asr_trace::Writer trace("client-send");
+    uint64_t seq=0,start=0;
+    { std::lock_guard lock(mtx_asrLocal); localEpoch=static_cast<uint64_t>(std::chrono::system_clock::now().time_since_epoch().count()); localSharing=false; }
 
 	auto last_time = std::chrono::steady_clock::now();
 	while (!p_show.ended() && !clientClosed()) {
@@ -434,23 +451,27 @@ void App::audioSend(){
         }
         const bool sharing = get(ui.send.share_audio) && !get(ui.room_user.is_muted_keep);
         const bool changed = captureGate.filter(buf_audio, sharing);
-        if (plug.asr.stream) {
+        if(!asr_trace::valid(buf_audio)) { buf_audio.clear(); asrDiscontinuity.store(true); }
+        uint64_t epoch;
+        {
             std::lock_guard lock(mtx_asrLocal);
-            if (!sharing || changed) asrLocalAudio.clear();
-            if (const auto dropped = asr_audio::append_audio(asrLocalAudio, buf_audio)) {
-                asrDiscontinuity.store(true);
-                std::cerr << "ASR local buffer overflow: " << dropped << " samples lost\n";
+            if(changed || asrDiscontinuity.exchange(false)) { ++localEpoch; asrLocalAudio.clear(); start=seq=0; }
+            localSharing=sharing; epoch=localEpoch;
+            if(plug.asr.stream && sharing) {
+                if(asr_audio::append_audio(asrLocalAudio,buf_audio)) { ++localEpoch; epoch=localEpoch; asrLocalAudio.assign(buf_audio.begin(),buf_audio.end()); start=seq=0; asrInterruptions.fetch_add(1); }
             }
         }
+        trace.record("sent",get(logger.id),epoch,seq,start,buf_audio);
         client_audio.Send(get(logger.id));
 		faudio_t faudio{ 0 };
-		if (get(ui.send.share_audio)) { faudio |= faudio_share; }
+		if (sharing) { faudio |= faudio_share; }
 		if (isHost<true>()) { faudio |= faudio_is_host; }
 		if (get(ui.room_user.host.mute_all_once)) [[unlikely]] { faudio |= faudio_mute_all_once; }
 		if (get(ui.room_user.host.mute_all_keep)) { faudio |= faudio_mute_all_keep; }
 		set(ui.room_user.host.mute_all_once, false);
 
 		client_audio.Send(faudio);
+        client_audio.Send(epoch); client_audio.Send(seq++); client_audio.Send(start); start+=buf_audio.size();
 		if (faudio & faudio_share) {
 			client_audio.Send(buf_audio);
 		}
@@ -463,6 +484,7 @@ void App::audioRecv(){
 		p_show.wait_threads.release();
 	}};
 	audioPlayer.start();
+    asr_trace::Writer trace("client-receive");
 
 
 	struct {
@@ -475,15 +497,16 @@ void App::audioRecv(){
 	} rv{};
 
 	while (!p_show.ended() && !clientClosed()) {
-		client_audio.ReceiveBy(rv.id);
-		client_audio.ReceiveBy(rv.faudio);
+        uint64_t epoch=0,seq=0,start=0;
+        if(!client_audio.ReceiveBy(rv.id)||!client_audio.ReceiveBy(rv.faudio)||!client_audio.ReceiveBy(epoch)||!client_audio.ReceiveBy(seq)||!client_audio.ReceiveBy(start)) { client_audio.Close(); break; }
 		if (rv.faudio & faudio_share) {
-			client_audio.ReceiveBy(rv.audioFrames);
+			if(!client_audio.ReceiveBounded(rv.audioFrames,16000*4) || !asr_trace::valid(rv.audioFrames)) { client_audio.Close(); break; }
 		}
 		else {
 			rv.audioFrames.resize(0);
 		}
 
+        trace.record("received",rv.id,epoch,seq,start,rv.audioFrames);
 		if (rv.faudio & faudio_is_host) {
 			if ((rv.faudio & faudio_mute_all_once) && rv.id != logger.id) [[unlikely]] {
 				set(ui.send.share_audio, false);
@@ -502,8 +525,8 @@ void App::audioRecv(){
 			auto& user = itr->second;
             if (const auto dropped = asr_audio::append_audio(user.audioBuf, rv.audioFrames)) {
                 if (rv.id != get(logger.id)) {
-                    asrDiscontinuity.store(true);
-                    std::cerr << "ASR remote buffer overflow: " << dropped << " samples lost\n";
+                    trace.record("playback-overflow",rv.id,epoch,seq,start);
+                    std::cerr << "Playback remote buffer overflow: " << dropped << " samples lost\n";
                 }
             }
 			//user.audioBuf.push(rv.audioFrames.begin(), rv.audioFrames.end());
@@ -593,7 +616,7 @@ void App::CameraCapture() {
 void App::audioMix() {
     DEFER{ [this]() { p_show.wait_threads.release(); } };
     constexpr size_t samples = audio::sampleRate / 50; // fixed 20 ms timeline
-    std::vector<float> playback(samples), recognition(samples), scratch(samples);
+    std::vector<float> playback(samples), scratch(samples);
     auto next = std::chrono::steady_clock::now();
     while (!p_show.ended() && !clientClosed()) {
         next += 20ms;
@@ -617,78 +640,66 @@ void App::audioMix() {
                 set(user.audio_playing, playing);
             }
         }
-        recognition = playback;
-        if (plug.asr.stream) {
-            std::lock_guard lock(mtx_asrLocal);
-            const auto n = asr_audio::pop_audio(asrLocalAudio, std::span<float>(scratch));
-            asr_audio::add(recognition, std::span<const float>(scratch.data(), n));
-        }
-        asr_audio::normalize(playback); asr_audio::normalize(recognition);
+        asr_audio::normalize(playback);
         audioUser.pushFrames(playback.data(), playback.size());
-        // Push silence too: VAD must see the pause even when packets stop arriving.
-        if (plug.asr.stream) {
-            asrInputSamples.fetch_add(recognition.size());
-            asrInputPeak.store(std::max(asr_audio::peak(recognition), asrInputPeak.load() * .90f));
-            const int status = plug.asr.push(plug.asr.stream, recognition.data(), static_cast<uint32_t>(recognition.size()));
-            if (status < 0 && status != PLUGIN_ASR_CLOSED) {
-                std::cerr << "ASR push failed: " << status << '\n';
-                asrDiscontinuity.store(true);
-            }
-        }
     }
 }
 
 void App::asrRecv() {
     DEFER{ [this]() { p_show.wait_threads.release(); } };
-    if (!plug.asr.stream) return;
-    std::deque<std::string> confirmed;
-    std::string draft;
-    uint64_t draftId = 0;
+    uint64_t epoch=0,position=0,seq=0;
+    bool sharing=false;
     std::vector<char> text(4096);
-    while (!p_show.ended() && !clientClosed()) {
-        if (asrDiscontinuity.exchange(false)) {
-            plug.asr.reset(plug.asr.stream);
-            draft.clear();
-            asrInterruptions.fetch_add(1);
-            { std::lock_guard lock(mtx_speechWords); asrStatus = "Audio samples lost; waiting for new speech."; }
-            std::cerr << "ASR: input discontinuity; stream reset\n";
-        }
-        for (;;) {
-            plugin_asr_result result{}; result.struct_size = sizeof(result);
-            int status = plug.asr.poll(plug.asr.stream, &result, text.data(), static_cast<uint32_t>(text.size()));
-            if (status == PLUGIN_ASR_BUFFER_SMALL) { text.resize(result.text_bytes); continue; }
-            if (status != PLUGIN_ASR_EVENT) break;
-            std::string value(text.data());
-            if (result.type == PLUGIN_ASR_PARTIAL) {
-                draftId = result.utterance_id; draft = std::move(value);
-            } else if (result.type == PLUGIN_ASR_FINAL) {
-                if (draftId == result.utterance_id) draft.clear();
-                if (!value.empty()) confirmed.push_back(std::move(value));
-                while (confirmed.size() > 32) confirmed.pop_front();
-            } else if (result.type == PLUGIN_ASR_GAP || result.type == PLUGIN_ASR_ERROR) {
-                draft.clear();
-                std::cerr << "ASR: " << value << '\n';
-                std::lock_guard lock(mtx_speechWords);
-                if (result.type == PLUGIN_ASR_GAP) asrInterruptions.fetch_add(1);
-                asrStatus = result.type == PLUGIN_ASR_ERROR ? "Subtitles unavailable; rejoin to retry." : "ASR overloaded; waiting for new speech. See startup log.";
-            }
-            if (result.type == PLUGIN_ASR_PARTIAL || result.type == PLUGIN_ASR_FINAL) {
-                std::clog << "ASR event=" << result.type << " id=" << result.utterance_id
-                          << " revision=" << result.revision << " queue_ms=" << result.queue_ms
-                          << " inference_ms=" << result.inference_ms << '\n';
-                std::lock_guard lock(mtx_speechWords); asrStatus.clear();
-            }
-        }
+    asr_trace::Writer trace("client-asr");
+    auto send_event=[&](captions::Event e) {
+        e.source=get(logger.id); e.epoch=epoch;
+        std::lock_guard lock(mtx_captions);
+        if(e.kind==captions::partial) std::erase_if(captionOutgoing,[&](auto& old){return old.kind==captions::partial && old.epoch==e.epoch && old.id==e.id;});
+        if(captionOutgoing.size()>=128) { client.Close(); return; } // never silently discard a final
+        captionOutgoing.push_back(std::move(e));
+    };
+    while(!p_show.ended() && !clientClosed()) {
+        std::vector<float> pcm;
+        uint64_t observed; bool enabled;
         {
-            std::lock_guard lock(mtx_speechWords);
-            speechWords.clear();
-            for (const auto& sentence : confirmed) { speechWords += sentence; speechWords += '\n'; }
-            speechWords += draft;
+            std::lock_guard lock(mtx_asrLocal);
+            observed=localEpoch; enabled=localSharing;
+            pcm.assign(asrLocalAudio.begin(),asrLocalAudio.end()); asrLocalAudio.clear();
+        }
+        if(observed!=epoch || enabled!=sharing) {
+            epoch=observed; sharing=enabled; position=seq=0;
+            if(plug.asr.stream) plug.asr.reset(plug.asr.stream);
+            if(epoch) { captions::Event e; e.kind=(!plug.asr.stream && sharing)?captions::unavailable:captions::cancel;
+                if(e.kind==captions::unavailable) e.text="Subtitles unavailable on speaker device";
+                send_event(std::move(e)); }
+            trace.record("reset",get(logger.id),epoch,0,0);
+        }
+        if(!sharing || !plug.asr.stream) { std::this_thread::sleep_for(10ms); continue; }
+        if(!pcm.empty()) {
+            trace.record("asr-raw",get(logger.id),epoch,seq++,position,pcm); position+=pcm.size();
+            asrInputSamples.fetch_add(pcm.size()); asrInputPeak.store(std::max(asr_audio::peak(pcm),asrInputPeak.load()*.9f));
+            if(plug.asr.push(plug.asr.stream,pcm.data(),static_cast<uint32_t>(pcm.size()))<0) asrDiscontinuity.store(true);
+        }
+        for(;;) {
+            plugin_asr_result r{}; r.struct_size=sizeof(r);
+            int status=plug.asr.poll(plug.asr.stream,&r,text.data(),static_cast<uint32_t>(text.size()));
+            if(status==PLUGIN_ASR_BUFFER_SMALL) { if(r.text_bytes>4097) { asrDiscontinuity.store(true); break; } text.resize(r.text_bytes); continue; }
+            if(status!=PLUGIN_ASR_EVENT) break;
+            // Do not label an in-flight result with a newer capture epoch.
+            { std::lock_guard lock(mtx_asrLocal); if(localEpoch!=epoch || !localSharing) break; }
+            captions::Event e; e.id=r.utterance_id; e.revision=r.revision; e.text=text.data();
+            if(r.type==PLUGIN_ASR_PARTIAL) e.kind=captions::partial;
+            else if(r.type==PLUGIN_ASR_FINAL) e.kind=captions::final;
+            else if(r.type==PLUGIN_ASR_GAP || r.type==PLUGIN_ASR_ERROR) {
+                e.kind=captions::unavailable; e.text="Subtitles interrupted on speaker device"; asrDiscontinuity.store(true); asrInterruptions.fetch_add(1);
+            } else continue;
+            trace.record("event-"+std::to_string(r.type),get(logger.id),epoch,r.revision,r.start_sample,{},e.text+" | id="+std::to_string(r.utterance_id)+" end="+std::to_string(r.end_sample));
+            std::clog<<"ASR type="<<r.type<<" id="<<r.utterance_id<<" queue_ms="<<r.queue_ms<<" inference_ms="<<r.inference_ms<<'\n';
+            send_event(std::move(e));
         }
         std::this_thread::sleep_for(10ms);
     }
-    // Meeting exit cancels, rather than publishing late results into another room.
-    plug.asr.reset(plug.asr.stream);
+    if(plug.asr.stream) plug.asr.reset(plug.asr.stream);
 }
 
 void App::ShowPara::setEnd(bool ended, End showEnd) {
@@ -719,7 +730,8 @@ void App::restoreAfterShow() {
 App::Page App::Show() {
 
     if (plug.asr.stream) plug.asr.reset(plug.asr.stream);
-    { std::lock_guard lock(mtx_asrLocal); asrLocalAudio.clear(); }
+    { std::lock_guard lock(mtx_asrLocal); asrLocalAudio.clear(); localEpoch=0; localSharing=false; }
+    { std::lock_guard lock(mtx_captions); captionStore={}; captionOutgoing.clear(); }
     { std::lock_guard lock(mtx_speechWords); speechWords.clear(); if (plug.asr.stream) asrStatus.clear(); }
     asrDiscontinuity.store(false);
     captureSamples.store(0); asrInputSamples.store(0); asrInterruptions.store(0);
@@ -1085,7 +1097,7 @@ App::Page App::Show() {
             ImGui::Text("Capture: %s | samples: %llu", captureActive.load() ? "running" : "NOT RUNNING",
                 static_cast<unsigned long long>(captureSamples.load()));
             ImGui::ProgressBar(capturePeak.load(), ImVec2(-FLT_MIN, 0), "Microphone level");
-            ImGui::ProgressBar(asrInputPeak.load(), ImVec2(-FLT_MIN, 0), "ASR input level (local + remote)");
+            ImGui::ProgressBar(asrInputPeak.load(), ImVec2(-FLT_MIN, 0), "ASR input level (local microphone only)");
             ImGui::Text("ASR input: %.1fs | interruptions: %llu", asrInputSamples.load() / 16000.0,
                 static_cast<unsigned long long>(asrInterruptions.load()));
 			ImGui::BeginChild("##speech", ImVec2(-FLT_MIN, 150), true, ImGuiWindowFlags_HorizontalScrollbar);
@@ -1393,7 +1405,7 @@ App::Page App::connectToServer() {
 			ImGui::InputScalar("target_port", ImGuiDataType_U16, &p1.port);
 			ImGui::InputText("your_name", p1.name, sizeof(p1.name), ImGuiInputTextFlags_CharsNoBlank);
 			bool ok{ true };
-			if (!first)						{ ImGui::Text("connect failed"); } 
+			if (!first)						{ ImGui::Text("Connection failed. Server and client must both use protocol v2."); }
 			if (strlen(p1.name) == 0)		{ ImGui::Text("name should not be blank"); ok = false; }
 			if (p1.port == p1.invalid_port)	{ ImGui::Text("%s: port invalid - should be a unsigned number not 0", p1.port); ok = false; }
 			if (ok && ImGui::Button("connect")) { break; }
@@ -1401,10 +1413,12 @@ App::Page App::connectToServer() {
 		bool sync_connection;
 		if (client.ConnectTo(net::tcp::Ip::v4, p1.ipv4, p1.port) &&
 			client.Send(connect_user) &&
+            client.Send(captions::protocol) && client.ReceiveBy(sync_connection) && sync_connection &&
 			client.ReceiveBy(get_id) &&
 
 			client_audio.ConnectTo(net::tcp::Ip::v4, p1.ipv4, p1.port) &&
 			client_audio.Send(connect_audio) &&
+            client_audio.Send(captions::protocol) && client_audio.ReceiveBy(sync_connection) && sync_connection &&
 			client_audio.Send(get_id) &&
 			client_audio.ReceiveBy(sync_connection)
 		) {
@@ -1499,10 +1513,8 @@ App::App() {
         auto bytes = p.u8string(); return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     };
     const auto setting = [](const char* key, const std::string& fallback) {
-        char* value = nullptr; size_t n = 0;
-        _dupenv_s(&value, &n, key);
-        std::string result = value && *value ? value : fallback;
-        free(value); return result;
+        const auto value=flexmeet::environment(key);
+        return value.empty()?fallback:value;
     };
     const auto dll = utf8(assets / "plugin_ASR.dll");
     bool loaded = plug.asr.loader.load(dll.c_str());

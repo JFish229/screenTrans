@@ -1,8 +1,9 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2026 Yuan Aowei
 #pragma once
 
 #include <vector>
+#include <captions.hpp>
 #include <thread>
 #include <net/tcp/Client.hpp>
 #include <optional>
@@ -37,7 +38,7 @@ private:
 	//};
 	//Flag m_flag = f_none;
 	std::atomic<uint32_t> m_id = room::invalid_id;
-	std::atomic<net::socket_t> m_host_skt{ net::invalid_socket };
+	std::atomic<net::socket_t> m_host_source{ net::invalid_socket };
 	std::atomic<uint32_t> m_passwd{ invalid_passwd };
 	std::atomic<bool> m_used{ false };
 	std::counting_semaphore<> m_cs_dead_threads{0};
@@ -50,8 +51,11 @@ private:
 		net::tcp::Client client_audio;
 		std::mutex mtx_client;
 		std::mutex mtx_audio;
+        std::atomic<bool> finished{false};
 	};
-	std::vector<std::unique_ptr<User>> m_client_sockets;
+	std::mutex m_caption_mutex;
+    captions::Store m_captions;
+    std::vector<std::unique_ptr<User>> m_client_sockets;
 	std::vector<std::jthread> m_clients_threads;
 	std::mutex m_mtx_used;
 	std::mutex m_mtx_need_check;
@@ -71,8 +75,8 @@ public:
 	void setPasswd(uint32_t passwd) { m_passwd.store(passwd, std::memory_order_release); }
 	//std::unique_ptr<Client>& client(size_t i) { return m_client_sockets[i]; }
 	std::jthread& thread(size_t i) { return m_clients_threads[i]; }
-	void pushClient(net::tcp::Client c, net::tcp::Client c_audio);
-	void setHost(user::id_t id) { m_host_skt = getSocketById(id); }
+	void pushClient(net::tcp::Client c, net::tcp::Client c_audio, user::id_t source);
+	void setHost(user::id_t id) { std::shared_lock lock(m_mtx_client_sockets); for(auto& user:m_client_sockets) if(user->id==id) {m_host_source=id; break;} }
 
 	constexpr static user::id_t makeId(net::socket_t skt) { return static_cast<user::id_t>(skt); }
 	constexpr static net::socket_t getSocketById(user::id_t id) { return static_cast<net::socket_t>(id); }

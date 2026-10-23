@@ -1,6 +1,8 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
+#include <array>
 #include <deque>
 #include <functional>
 #include <string>
@@ -12,12 +14,14 @@ constexpr int vad_frame = 512; // Silero's 32 ms window at 16 kHz.
 struct Settings {
     int first_ms = 512, step_ms = 400, silence_ms = 300;
     int pre_ms = 200, window_ms = 8000, min_ms = 160;
+    bool hysteresis=false; float start=.65f, hold=.35f;
 };
 struct DecodeRequest {
     const std::vector<float>& pcm;
     const std::string& prompt;
     bool final;
     int64_t start, from, through; // absolute sample positions, [from, through).
+    float voiced_ms=0, vad_probability=0, snr_db=0;
 };
 struct Event {
     enum Kind { partial = 1, final = 2, gap = 3, error = 4, drained = 5 };
@@ -30,6 +34,7 @@ struct Event {
 struct Backend {
     virtual ~Backend() = default;
     virtual bool speech(const float* frame) = 0;
+    virtual float probability(const float* frame) { return speech(frame)?1.f:0.f; }
     virtual std::string decode(const DecodeRequest&) = 0;
     virtual void reset_vad() = 0;
     virtual bool cancelled() const = 0;
@@ -44,6 +49,7 @@ public:
         active_ = false;
         frame_.clear(); audio_.clear(); pre_.clear(); prompt_.clear();
         cursor_ = position; voiced_ = 0; revision_ = 0;
+        votes_={}; vote_cursor_=0; observations_.clear(); noise_=1e-8;
         backend_.reset_vad();
     }
     void consume(const float* data, size_t count) {
@@ -70,9 +76,15 @@ public:
     }
 private:
     void process_frame() {
-        const bool speech = backend_.speech(frame_.data());
+        const float probability=settings_.hysteresis ? backend_.probability(frame_.data()) : (backend_.speech(frame_.data())?1.f:0.f);
+        double power=0; for(float f:frame_) power+=double(f)*f; power/=vad_frame;
+        votes_[vote_cursor_++%3]=probability>=settings_.start;
+        const bool speech=settings_.hysteresis ? (active_ ? probability>=settings_.hold : std::count(votes_.begin(),votes_.end(),true)>=2) : probability>=.5f;
+        if(!active_ && probability<.1f) noise_=.98*noise_+.02*power;
+        observations_.push_back({cursor_,probability,power});
+        while(!observations_.empty() && observations_.front().position<cursor_-settings_.window_ms*16) observations_.pop_front();
         if (!active_ && speech) {
-            active_ = true; ++id_; revision_ = 0; voiced_ = 0;
+            active_ = true; ++id_; revision_ = 0; voiced_ = settings_.hysteresis ? (std::count(votes_.begin(),votes_.end(),true)-1)*vad_frame : 0;
             audio_.assign(pre_.begin(), pre_.end());
             start_ = cursor_ - static_cast<int64_t>(audio_.size()); from_ = start_;
             next_draft_ = cursor_ + settings_.first_ms * 16;
@@ -99,11 +111,15 @@ private:
     }
     void end_utterance(int64_t end) {
         if (voiced_ >= settings_.min_ms * 16) recognize(true, end);
+        else if(revision_) { Event e; e.kind=Event::final; e.id=id_; e.revision=++revision_; e.start=from_; e.end=end; emit_(std::move(e)); }
         active_ = false; audio_.clear(); voiced_ = 0;
         // Preserve VAD state across pauses; reset only on a stream break.
     }
     void recognize(bool final, int64_t through) {
-        const auto text = backend_.decode({audio_, prompt_, final, start_, from_, through});
+        float voice=0,prob=0; double power=0;
+        for(const auto& o:observations_) if(o.position>=from_ && o.position<through && o.probability>=settings_.hold) { voice+=32; prob+=o.probability; power+=o.power; }
+        const float n=voice/32;
+        const auto text = backend_.decode({audio_, prompt_, final, start_, from_, through,voice,n?prob/n:0,float(10*std::log10((n?power/n:0)+1e-12)-10*std::log10(noise_+1e-12))});
         if (backend_.cancelled()) return;
         Event event;
         event.kind = final ? Event::final : Event::partial;
@@ -125,6 +141,9 @@ private:
     std::vector<float> frame_, audio_;
     std::deque<float> pre_;
     std::string prompt_;
+    struct Observation { int64_t position; float probability; double power; };
+    std::deque<Observation> observations_;
+    std::array<bool,3> votes_{}; size_t vote_cursor_=0; double noise_=1e-8;
     bool active_ = false;
     uint64_t id_ = 0, revision_ = 0;
     int64_t cursor_ = 0, start_ = 0, from_ = 0, last_voice_ = 0, voiced_ = 0, next_draft_ = 0;
