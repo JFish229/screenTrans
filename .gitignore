@@ -10,3 +10,34 @@
 /ASR/build/
 /ASR/models/
 __pycache__/
+
+# Local ASR Python diagnostics and test runners (not runtime dependencies).
+/ASR/tools/*.py
+/ASR/tests/*.py
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Generated verification reports; keep test instructions and source code.
+/ASR/verification/*.json
+/ASR/verification/RESULTS*.md
+/ASR/verification/*.log
+/ASR/verification/*.jsonl
+/ASR/verification/*.f32
+/ASR/verification/*.wav
+
+# Local application settings and diagnostic output.
+/FlexMeet.ini
+/imgui.ini
+*.log
+*.dmp
+
+# CMake / Visual Studio intermediate output in other build directories.
+**/CMakeFiles/
+**/CMakeCache.txt
+**/Testing/Temporary/
+*.obj
+*.pch
+*.ipch
+*.ilk
+*.tlog/
